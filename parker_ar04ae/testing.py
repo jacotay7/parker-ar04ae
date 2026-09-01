@@ -3,15 +3,19 @@
     from parker_ar04ae import AriesDrive
     from parker_ar04ae.testing import FakePort
 
-    port = FakePort({"TREV": "*TREV 92-016966-01-5"})
+    port = FakePort({"TREV": "Aries OS Revision 3.30"})
     drive = AriesDrive(byte_port=port).connect()
     drive.revision()
+
+:class:`FakePort` reproduces the real wire format - command echo, optional DC1
+lead marker, reply lines, then the ENQ end-of-response prompt.
 """
 
 from __future__ import annotations
 
 from typing import Callable, Mapping, Union
 
+from .protocol import DC1, ENQ
 from .transport import BytePort
 
 Reply = Union[str, list, Callable[[str], str]]
@@ -26,15 +30,14 @@ class FakePort(BytePort):
         Maps an upper-cased command to the text sent back. The value may be a
         string, a list of lines, or a callable taking the command. A command
         with no entry gets ``default``.
-    default:
-        Reply for an unknown command; ``*UNDEFINED_COMMAND`` as the real drive
-        does. Pass ``""`` to model a dead or wrongly-wired link, where nothing
-        comes back at all.
     echo:
-        Prepend the received command to its reply, imitating the drive's
-        full-duplex echo.
-    eol:
-        Terminator appended to each response line.
+        Echo the received command back first, as the drive does with ``ECHO1``.
+    enq:
+        Terminate each reply with the ENQ prompt, as the drive does. Set
+        ``False`` to model a unit that never sends one.
+    default:
+        Reply for an unknown command. Pass ``""`` to model a dead link, where
+        nothing comes back at all.
     """
 
     def __init__(
@@ -42,12 +45,14 @@ class FakePort(BytePort):
         replies: Mapping[str, Reply] | None = None,
         echo: bool = True,
         eol: str = "\r\n",
-        default: Reply = "*UNDEFINED_COMMAND",
+        enq: bool = True,
+        default: Reply = "ERROR: Unknown Command",
     ):
         self.replies = dict(replies or {})
         self.echo = echo
-        self.default = default
         self.eol = eol
+        self.enq = enq
+        self.default = default
         self.written: list[str] = []
         self._rx = bytearray()
         self._tx_partial = ""
@@ -95,6 +100,8 @@ class FakePort(BytePort):
             reply = reply(command)
         for line in [reply] if isinstance(reply, str) else reply:
             self._emit(line)
+        if self.enq:
+            self._emit(ENQ)
 
     def _emit(self, line: str) -> None:
         self._rx += (line + self.eol).encode("ascii", errors="replace")
@@ -103,34 +110,51 @@ class FakePort(BytePort):
         return f"<FakePort {len(self.replies)} replies, {len(self.written)} received>"
 
 
-#: Plausible replies for the common queries, for smoke-testing offline. The
-#: exact text a real drive returns will differ; do not assert on these values
-#: when checking against hardware.
+#: Replies captured from an AR-04AE running Aries OS 3.30, idle and disabled.
+#: TREV carries the DC1 lead marker the real drive sends.
 DEMO_REPLIES: dict[str, Reply] = {
-    "TREV": "*TREV 92-016966-01-5_D1.0 ARIES",
-    "TAS": "*TAS0000_0000_0000_0000_0000_0000_0000_0000",
-    "TASX": "*TASX0000_0000_0000_0000",
-    "TER": "*TER0000_0000_0000_0000",
-    "TPE": "*TPE+0",
-    "TPC": "*TPC+0",
-    "TPER": "*TPER+0",
-    "TVEL": "*TVEL+0.0000",
-    "TCMD": "*TCMD+0.000",
-    "TDTEMP": "*TDTEMP32.0",
-    "TANI": "*TANI+0.000",
-    "DRIVE": "*DRIVE0",
-    "DRIVE1": "",
-    "DRIVE0": "",
-    "DMTR": "*DMTRBE231FJ",
-    "DMODE": "*DMODE1",
-    "ERES": "*ERES4000",
-    "TSTAT": [
-        "*ARIES SERVO DRIVE",
-        "*TREV 92-016966-01-5_D1.0",
-        "*MOTOR: BE231FJ",
-        "*DRIVE: DISABLED",
-        "*POSITION: +0",
-    ],
+    "TREV": [DC1, "Aries OS Revision 3.30"],
+    "TAS": "0000_0000_0000_0000",
+    "TIN": "0000_0000_0000_0000",
+    "TOUT": "0000_0000_0000_0011",
+    "TPE": "0",
+    "TPC": "0",
+    "TPER": "0",
+    "TVEL": "0.000",
+    "TVELA": "0.000",
+    "TTRQ": "0.000",
+    "TANI": "0.940",
+    "TVBUS": "163.1",
+    "TDTEMP": "30.43",
+    "TMTEMP": "25.00",
+    "DRIVE": "0",
+    "DMTR": "OTHER=R200D",
+    "DMODE": "4",
+    "ERES": "944000",
+    "DRES": "944000",
+    "DIFOLD": "1",
+    "DTHERM": "0",
+    "DPWM": "32",
+    "DMTIC": "2.000",
+    "DMTLIM": "4.000",
+    "DMTW": "5.000",
+    "DMTKE": "325.0",
+    "DMTRES": "10.40",
+    "DMTIND": "21.00",
+    "DMEPIT": "0.000",
+    "DPOLE": "16",
+    "DMTJ": "33158.0",
+    "DMTD": "134.9",
+    "SGP": "2.000",
+    "SGI": "0.000",
+    "SGV": "2.000",
+    "SGVF": "0.000",
+    "SGAF": "0.000",
+    "SFB": "2",
+    "SMPER": "944000",
+    "ECHO": "1",
+    "ADDR": "0",
+    "ERRLVL": "4",
 }
 
 

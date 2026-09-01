@@ -14,7 +14,7 @@ import logging
 import sys
 import time
 
-from .drive import BAUD_RATES, AriesDrive
+from .drive import BAUD_RATES, PARAMETERS, AriesDrive
 from .errors import AriesError
 
 
@@ -115,41 +115,36 @@ def cmd_probe(args) -> int:
 
 
 def cmd_info(args) -> int:
-    """Dump identity, status and feedback in one pass."""
+    """Read every known parameter and print it grouped."""
+    groups = [args.group] if args.group else None
     with AriesDrive(args.port, baudrate=args.baud or 9600, timeout=args.timeout) as d:
-        print(f"revision      {d.raw('TREV', strict=False).value}")
-        for label, cmd in [
-            ("motor", "DMTR"),
-            ("drive mode", "DMODE"),
-            ("enc. res.", "ERES"),
-            ("enabled", "DRIVE"),
-            ("axis status", "TAS"),
-            ("ext. status", "TASX"),
-            ("errors", "TER"),
-            ("position", "TPE"),
-            ("velocity", "TVEL"),
-            ("current", "TCMD"),
-            ("temperature", "TDTEMP"),
-        ]:
-            resp = d.raw(cmd, strict=False)
-            value = resp.value if not resp.empty else "(no response)"
-            print(f"{label:<13} {value}")
-
-        if args.stat:
-            print("\n--- TSTAT ---")
-            for line in d.raw("TSTAT", timeout=3.0, quiet_time=0.4, strict=False).lines:
-                print(line)
+        snap = d.snapshot(groups=groups)
+    unsupported = []
+    for group, entries in snap.items():
+        print(f"\n[{group}]")
+        for name, value in entries.items():
+            cmd = PARAMETERS[group][name][0]
+            if value is None:
+                unsupported.append(cmd)
+                if args.all:
+                    print(f"  {name:<20} {cmd:<8} -")
+            else:
+                print(f"  {name:<20} {cmd:<8} {value}")
+    if unsupported:
+        print(f"\nNot supported by this unit: {', '.join(unsupported)}")
     return 0
 
 
 def cmd_monitor(args) -> int:
-    """Poll position, velocity and current until interrupted."""
+    """Poll position, velocity and torque until interrupted."""
+    fields = [("position", "TPE"), ("velocity", "TVELA"), ("torque", "TTRQ"),
+              ("pos.error", "TPER"), ("bus V", "TVBUS")]
     with AriesDrive(args.port, baudrate=args.baud or 9600, timeout=args.timeout) as d:
-        print("position        velocity        current     (ctrl-C to stop)")
+        print("  ".join(f"{label:>12}" for label, _ in fields) + "   (ctrl-C to stop)")
         try:
             while True:
-                row = [d.raw(c, strict=False).value or "-" for c in ("TPE", "TVEL", "TCMD")]
-                print(f"\r{row[0]:<15} {row[1]:<15} {row[2]:<12}", end="", flush=True)
+                row = [d.raw(cmd, strict=False).value or "-" for _, cmd in fields]
+                print("\r" + "  ".join(f"{v:>12}" for v in row), end="", flush=True)
                 time.sleep(args.interval)
         except KeyboardInterrupt:
             print()
@@ -195,11 +190,12 @@ def main(argv: list[str] | None = None) -> int:
     p = with_port(sub.add_parser("probe", help="find the drive's port and baud rate"), False)
     p.set_defaults(func=cmd_probe, timeout=0.6)
 
-    p = with_port(sub.add_parser("info", help="dump identity and status"))
-    p.add_argument("--stat", action="store_true", help="also print the full TSTAT page")
+    p = with_port(sub.add_parser("info", help="read every known parameter"))
+    p.add_argument("-g", "--group", choices=sorted(PARAMETERS), help="just one group")
+    p.add_argument("--all", action="store_true", help="also list unsupported commands")
     p.set_defaults(func=cmd_info)
 
-    p = with_port(sub.add_parser("monitor", help="poll position/velocity/current"))
+    p = with_port(sub.add_parser("monitor", help="poll position/velocity/torque"))
     p.add_argument("-i", "--interval", type=float, default=0.25)
     p.set_defaults(func=cmd_monitor)
 

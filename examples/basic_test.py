@@ -15,55 +15,50 @@ import sys
 
 from parker_ar04ae import AriesDrive, AriesError
 
-QUERIES = [
-    ("revision", "TREV"),
-    ("motor", "DMTR"),
-    ("drive mode", "DMODE"),
-    ("encoder res.", "ERES"),
-    ("enabled", "DRIVE"),
-    ("axis status", "TAS"),
-    ("ext. status", "TASX"),
-    ("error status", "TER"),
-    ("position", "TPE"),
-    ("velocity", "TVEL"),
-    ("current", "TCMD"),
-    ("temperature", "TDTEMP"),
-]
-
-
 def run(drive) -> int:
     print("== link ==")
     if not drive.ping():
         print("  drive did not answer. Check power, cable and baud rate,")
         print("  or run: python -m parker_ar04ae probe")
         return 1
-    print("  drive is answering\n")
+    print(f"  {drive.revision()}\n")
 
-    print("== queries ==")
-    unsupported = []
-    for label, cmd in QUERIES:
-        resp = drive.raw(cmd, strict=False)
-        if resp.empty:
-            print(f"  {label:<14} (no response)")
-        elif resp.is_error:
-            print(f"  {label:<14} {resp.error_code}")
-            unsupported.append(cmd)
-        else:
-            print(f"  {label:<14} {resp.value}")
+    print("== live readings ==")
+    for label, getter in [
+        ("bus voltage", lambda: f"{drive.bus_voltage():.1f} V"),
+        ("drive temp", lambda: f"{drive.drive_temperature():.2f} C"),
+        ("motor temp", lambda: f"{drive.motor_temperature():.2f} C"),
+        ("motor", drive.motor),
+        ("enabled", lambda: "yes" if drive.is_enabled() else "no"),
+        ("position", lambda: f"{drive.position()} counts"),
+        ("following err", lambda: f"{drive.position_error()} counts"),
+        ("velocity", lambda: f"{drive.actual_velocity():.3f}"),
+        ("torque", lambda: f"{drive.torque():.3f}"),
+        ("analog in", lambda: f"{drive.analog_input():.3f} V"),
+    ]:
+        try:
+            print(f"  {label:<14} {getter()}")
+        except AriesError as exc:
+            print(f"  {label:<14} unavailable ({exc})")
 
-    print("\n== fault check ==")
-    ter = drive.raw("TER", strict=False)
-    if ter.empty or ter.is_error:
-        print("  TER unavailable, cannot judge fault state")
-    elif "1" in ter.as_bits():
-        bits = [i + 1 for i, b in enumerate(ter.as_bits()) if b == "1"]
-        print(f"  FAULT: TER bits set: {bits}")
-    else:
-        print("  no faults reported")
+    print("\n== status bits ==")
+    for label, resp in [
+        ("axis (TAS)", drive.axis_status()),
+        ("inputs (TIN)", drive.input_states()),
+        ("outputs (TOUT)", drive.output_states()),
+    ]:
+        bits = resp.set_bits()
+        print(f"  {label:<14} {resp.value}   set: {bits or 'none'}")
 
-    if unsupported:
-        print(f"\nNot recognised by this unit: {', '.join(unsupported)}")
-        print("Cross-check those against the manual for your firmware revision.")
+    print("\n== configuration ==")
+    snap = drive.snapshot(groups=["drive_config", "motor_config", "servo_gains"])
+    for group, entries in snap.items():
+        print(f"  [{group}]")
+        for name, value in entries.items():
+            if value is not None:
+                print(f"    {name:<20} {value}")
+
+    print("\nRead-only check complete. Nothing was enabled or commanded to move.")
     return 0
 
 

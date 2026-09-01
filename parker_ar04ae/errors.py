@@ -25,15 +25,15 @@ class TimeoutError_(AriesError):
 class CommandError(AriesError):
     """The drive answered, but reported an error for the command we sent.
 
-    ``code`` is the drive's error token with the leading ``*`` stripped, e.g.
-    ``UNDEFINED_COMMAND`` or ``INVALID_DATA``.
+    ``message`` is the drive's text with the ``ERROR:`` prefix stripped, e.g.
+    ``Unknown Command``.
     """
 
-    def __init__(self, command: str, code: str, raw: str = ""):
+    def __init__(self, command: str, message: str, raw: str = ""):
         self.command = command
-        self.code = code
+        self.message = message
         self.raw = raw
-        super().__init__(f"{command!r} rejected by drive: {code}")
+        super().__init__(f"{command!r} rejected by drive: {message}")
 
 
 # Friendlier aliases that do not shadow the builtins inside this package.

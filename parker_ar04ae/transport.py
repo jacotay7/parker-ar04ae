@@ -8,9 +8,11 @@ Two layers live here:
     framing logic can be exercised without hardware.
 
 ``SerialTransport``
-    Line framing on top of a ``BytePort``: append the terminator on write,
-    accumulate bytes on read, split on CR/LF, drop the command echo and the
-    ``>`` prompt that the drive emits in full-duplex mode.
+    Framing on top of a ``BytePort``: append CR on write, read until the drive
+    sends its ENQ end-of-response prompt, then split on CRLF and drop the
+    command echo and the protocol's control markers.
+
+See :mod:`parker_ar04ae.protocol` for the wire format.
 """
 
 from __future__ import annotations
@@ -21,11 +23,16 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from .errors import ConnectionError_
+from .protocol import DC1, ENQ, EOL
 
 log = logging.getLogger(__name__)
 
 #: Poll interval while waiting for bytes to arrive.
 POLL_INTERVAL = 0.005
+
+#: After ENQ arrives, how long to keep draining so the CRLF that follows it does
+#: not leak into the next reply.
+TRAILER_DRAIN = 0.03
 
 
 class BytePort(ABC):
@@ -98,7 +105,9 @@ class SerialPort(BytePort):
                 parity=self.parity,
                 stopbits=self.stopbits,
                 rtscts=self.rtscts,
-                xonxoff=self.xonxoff,
+                # The drive uses DC1/ENQ as protocol markers, so software flow
+                # control must stay off or pyserial would eat them.
+                xonxoff=False,
                 timeout=0,  # non-blocking; SerialTransport owns the deadlines
                 write_timeout=2.0,
             )
@@ -138,39 +147,30 @@ class SerialPort(BytePort):
 
 
 class SerialTransport:
-    """Line-oriented framing over a :class:`BytePort`.
+    """Line framing over a :class:`BytePort`.
 
     Parameters
     ----------
     port:
         The underlying byte port.
     timeout:
-        Default seconds to wait for the first byte of a response.
-    quiet_time:
-        Once bytes have arrived, how long the line must stay silent before the
-        response is considered complete. Multi-line reports (``TSTAT``) arrive
-        as a burst, so this is what separates "still streaming" from "done".
+        Seconds to wait for the drive's ENQ end-of-response prompt.
     eol:
-        Terminator appended to every command. Parker drives use a bare CR.
-    echo:
-        ``True`` if the drive echoes the characters it receives (the factory
-        default). The echoed command is stripped from the response.
+        Terminator appended to every command; the drive expects a bare CR.
+    encoding:
+        Wire encoding. The protocol is ASCII.
     """
 
     def __init__(
         self,
         port: BytePort,
         timeout: float = 1.0,
-        quiet_time: float = 0.12,
-        eol: str = "\r",
-        echo: bool = True,
+        eol: str = EOL,
         encoding: str = "ascii",
     ):
         self.port = port
         self.timeout = timeout
-        self.quiet_time = quiet_time
         self.eol = eol
-        self.echo = echo
         self.encoding = encoding
 
     # -- lifecycle ---------------------------------------------------------
@@ -201,27 +201,28 @@ class SerialTransport:
         log.debug("TX %r", data)
         self.port.write(data)
 
-    def read_raw(
-        self, timeout: Optional[float] = None, quiet_time: Optional[float] = None
-    ) -> str:
-        """Read until the drive goes quiet, and return the decoded text.
+    def read_raw(self, timeout: Optional[float] = None) -> str:
+        """Read one reply, stopping at the drive's ENQ prompt.
 
-        Returns an empty string if nothing arrived before ``timeout``.
+        Returns whatever arrived if ``timeout`` expires first, so a drive that
+        never sends ENQ degrades to a plain timed read rather than hanging.
         """
         timeout = self.timeout if timeout is None else timeout
-        quiet_time = self.quiet_time if quiet_time is None else quiet_time
+        enq = ENQ.encode(self.encoding)
 
         buf = bytearray()
         deadline = time.monotonic() + timeout
-        last_rx = None
+        drain_until = None
 
         while True:
-            n = self.port.in_waiting
-            if n:
-                buf += self.port.read(n)
-                last_rx = time.monotonic()
-            elif last_rx is not None:
-                if time.monotonic() - last_rx >= quiet_time:
+            if self.port.in_waiting:
+                buf += self.port.read(self.port.in_waiting)
+                # Keep draining briefly past ENQ so its trailing CRLF does not
+                # show up at the head of the next reply.
+                if drain_until is None and enq in buf:
+                    drain_until = time.monotonic() + TRAILER_DRAIN
+            if drain_until is not None:
+                if time.monotonic() >= drain_until:
                     break
             elif time.monotonic() >= deadline:
                 break
@@ -235,38 +236,34 @@ class SerialTransport:
     # -- framing -----------------------------------------------------------
     @staticmethod
     def split_lines(text: str) -> list[str]:
-        """Split a raw response into stripped, non-empty lines.
+        """Split a raw reply into clean, non-empty lines.
 
-        The drive terminates lines with CR, CRLF or LF depending on the command,
-        and emits a bare ``>`` prompt in full-duplex mode; both are normalised
-        away here.
+        Drops the ENQ prompt and the DC1 lead marker, and any other stray
+        control characters, which ``str.strip`` alone would leave behind as
+        phantom non-empty lines.
         """
         lines = []
         for chunk in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            chunk = "".join(c for c in chunk if c >= " " and c != "\x7f")
             chunk = chunk.strip()
-            if chunk and chunk != ">":
+            if chunk:
                 lines.append(chunk)
         return lines
 
     def strip_echo(self, command: str, lines: list[str]) -> list[str]:
         """Drop the leading echo of ``command`` from ``lines``, if present.
 
-        Always checked, not only when ``self.echo`` is set: the echo state is a
-        property of the drive's configuration and may not match ours.
+        Always checked rather than keyed off a configured flag: ECHO is a
+        setting on the drive and may not match what we assume.
         """
         if lines and lines[0].strip().upper() == command.strip().upper():
             return lines[1:]
         return lines
 
-    def exchange(
-        self,
-        command: str,
-        timeout: Optional[float] = None,
-        quiet_time: Optional[float] = None,
-    ) -> list[str]:
-        """Send ``command`` and return the response lines, echo removed."""
+    def exchange(self, command: str, timeout: Optional[float] = None) -> list[str]:
+        """Send ``command`` and return the reply lines, echo and markers removed."""
         self.write_line(command)
-        raw = self.read_raw(timeout=timeout, quiet_time=quiet_time)
+        raw = self.read_raw(timeout=timeout)
         return self.strip_echo(command, self.split_lines(raw))
 
     def __repr__(self) -> str:

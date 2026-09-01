@@ -1,8 +1,12 @@
-"""Drive-level behaviour, driven entirely by the in-memory FakePort."""
+"""Drive-level behaviour, driven by the in-memory FakePort.
+
+Reply values are the ones captured from an AR-04AE running Aries OS 3.30.
+"""
 
 import pytest
 
 from parker_ar04ae import AriesDrive, CommandError
+from parker_ar04ae.drive import PARAMETER_COMMANDS, PARAMETERS
 from parker_ar04ae.errors import ConnectionError_, TimeoutError_
 from parker_ar04ae.testing import DEMO_REPLIES, FakePort, demo_drive
 
@@ -14,9 +18,7 @@ def port():
 
 @pytest.fixture
 def drive(port):
-    d = AriesDrive(byte_port=port, timeout=0.3)
-    d.transport.quiet_time = 0.02
-    return d.connect()
+    return AriesDrive(byte_port=port, timeout=0.3).connect()
 
 
 # -- plumbing --------------------------------------------------------------
@@ -26,9 +28,8 @@ def test_requires_a_port_or_transport():
 
 
 def test_commands_before_connect_raise():
-    d = AriesDrive(byte_port=FakePort(DEMO_REPLIES))
     with pytest.raises(ConnectionError_):
-        d.revision()
+        AriesDrive(byte_port=FakePort(DEMO_REPLIES)).revision()
 
 
 def test_context_manager_connects_and_closes(port):
@@ -38,19 +39,17 @@ def test_context_manager_connects_and_closes(port):
 
 
 def test_arguments_are_concatenated_onto_the_command(drive, port):
-    drive.raw("DMTR", "BE231FJ", strict=False)
-    assert port.written[-1] == "DMTRBE231FJ"
+    drive.raw("SGP", 2.0, strict=False)
+    assert port.written[-1] == "SGP2.0"
 
 
-def test_numeric_arguments(drive, port):
-    drive.raw("ERES", 4000, strict=False)
-    assert port.written[-1] == "ERES4000"
+def test_bare_command_reads(drive, port):
+    drive.raw("SGP", strict=False)
+    assert port.written[-1] == "SGP"
 
 
 def test_address_prefixes_the_command(port):
-    d = AriesDrive(byte_port=port, address=2)
-    d.transport.quiet_time = 0.02
-    d.connect().raw("TREV", strict=False)
+    AriesDrive(byte_port=port, address=2).connect().raw("TREV", strict=False)
     assert port.written[-1] == "2_TREV"
 
 
@@ -62,93 +61,93 @@ def test_no_prefix_without_an_address(drive, port):
 # -- errors ----------------------------------------------------------------
 def test_strict_mode_raises_on_drive_error(drive):
     with pytest.raises(CommandError) as exc:
-        drive.raw("NOSUCHCOMMAND")
-    assert exc.value.code == "UNDEFINED_COMMAND"
-    assert exc.value.command == "NOSUCHCOMMAND"
+        drive.raw("TASX")
+    assert exc.value.message == "Unknown Command"
+    assert exc.value.command == "TASX"
 
 
 def test_non_strict_mode_returns_the_error(drive):
-    resp = drive.raw("NOSUCHCOMMAND", strict=False)
-    assert resp.is_error and resp.error_code == "UNDEFINED_COMMAND"
+    resp = drive.raw("TASX", strict=False)
+    assert resp.is_error and resp.error_message == "Unknown Command"
 
 
 def test_strict_can_be_disabled_for_the_whole_drive(port):
-    d = AriesDrive(byte_port=port, strict=False)
-    d.transport.quiet_time = 0.02
-    assert d.connect().raw("NOSUCHCOMMAND").is_error
+    d = AriesDrive(byte_port=port, strict=False).connect()
+    assert d.raw("TASX").is_error
 
 
-def test_query_raises_when_the_drive_stays_silent(drive, port):
-    port.replies["QUIET"] = ""
-    port.echo = False
+def test_query_raises_when_the_drive_stays_silent(port):
+    silent = FakePort({}, echo=False, enq=False, default="")
+    d = AriesDrive(byte_port=silent, timeout=0.05).connect()
     with pytest.raises(TimeoutError_):
-        drive.query("QUIET")
+        d.query("TPE")
 
 
 def test_ping_is_true_when_the_drive_answers(drive):
     assert drive.ping() is True
 
 
-def test_ping_is_false_when_it_does_not():
-    silent = FakePort({}, echo=False, default="")
-    d = AriesDrive(byte_port=silent, timeout=0.05)
-    d.transport.quiet_time = 0.02
-    assert d.connect().ping() is False
-
-
 def test_ping_is_true_even_when_the_reply_is_an_error(port):
-    port.replies.clear()  # every command now answers *UNDEFINED_COMMAND
-    d = AriesDrive(byte_port=port, timeout=0.3)
-    d.transport.quiet_time = 0.02
-    assert d.connect().ping() is True
+    port.replies.clear()  # everything now answers ERROR: Unknown Command
+    assert AriesDrive(byte_port=port, timeout=0.3).connect().ping() is True
+
+
+def test_ping_is_false_on_a_dead_link():
+    dead = FakePort({}, echo=False, enq=False, default="")
+    assert AriesDrive(byte_port=dead, timeout=0.05).connect().ping() is False
 
 
 def test_ping_is_false_when_not_connected():
     assert AriesDrive(byte_port=FakePort()).ping() is False
 
 
-# -- queries ---------------------------------------------------------------
+# -- telemetry -------------------------------------------------------------
 def test_revision(drive):
-    assert drive.revision() == "92-016966-01-5_D1.0 ARIES"
+    assert drive.revision() == "Aries OS Revision 3.30"
+
+
+def test_motor(drive):
+    assert drive.motor() == "OTHER=R200D"
 
 
 def test_position_is_an_int(drive):
     assert drive.position() == 0
 
 
-def test_velocity_is_a_float(drive):
-    assert drive.velocity() == pytest.approx(0.0)
+def test_velocity_and_torque_are_floats(drive):
+    assert drive.actual_velocity() == pytest.approx(0.0)
+    assert drive.torque() == pytest.approx(0.0)
 
 
-def test_temperature(drive):
-    assert drive.drive_temperature() == pytest.approx(32.0)
+def test_bus_voltage(drive):
+    assert drive.bus_voltage() == pytest.approx(163.1)
+
+
+def test_temperatures(drive):
+    assert drive.drive_temperature() == pytest.approx(30.43)
+    assert drive.motor_temperature() == pytest.approx(25.0)
+
+
+def test_analog_input(drive):
+    assert drive.analog_input() == pytest.approx(0.94)
 
 
 def test_is_enabled_reads_drive(drive):
     assert drive.is_enabled() is False
 
 
-def test_status_report_returns_every_line(drive):
-    lines = drive.status_report(timeout=0.5)
-    assert len(lines) == 5
-    assert lines[0].startswith("*ARIES")
-
-
 def test_axis_status_bits(drive):
-    assert drive.axis_status().as_bits() == "0" * 32
+    assert drive.axis_status().set_bits() == []
 
 
-def test_drive_fault_is_false_when_ter_is_clear(drive):
-    assert drive.drive_fault() is False
-
-
-def test_drive_fault_is_true_when_a_bit_is_set(drive, port):
-    port.replies["TER"] = "*TER0000_0010_0000_0000"
-    assert drive.drive_fault() is True
+def test_output_states_bits(drive):
+    assert drive.output_states().set_bits() == [15, 16]
 
 
 # -- commands --------------------------------------------------------------
 def test_enable_and_disable_send_the_right_commands(drive, port):
+    port.replies["DRIVE1"] = ""
+    port.replies["DRIVE0"] = ""
     drive.enable()
     assert port.written[-1] == "DRIVE1"
     drive.disable()
@@ -160,25 +159,51 @@ def test_reset_does_not_wait_for_a_reply(drive, port):
     assert port.written[-1] == "RESET"
 
 
-def test_motor_reads_when_called_bare(drive, port):
-    assert drive.motor().value == "BE231FJ"
-    assert port.written[-1] == "DMTR"
+# -- parameter registry ----------------------------------------------------
+def test_get_reads_by_friendly_name(drive):
+    assert drive.get("bus_voltage").as_float() == pytest.approx(163.1)
+    assert drive.get("gain_p").value == "2.000"
 
 
-def test_motor_writes_when_given_a_part_number(drive, port):
-    port.replies["DMTRBE231FJ"] = ""
-    drive.motor("BE231FJ")
-    assert port.written[-1] == "DMTRBE231FJ"
+def test_set_writes_by_friendly_name(drive, port):
+    port.replies["SGP3.5"] = ""
+    drive.set("gain_p", 3.5)
+    assert port.written[-1] == "SGP3.5"
 
 
-def test_set_echo_tracks_state_on_the_transport(drive, port):
-    port.replies["ECHO0"] = ""
-    drive.set_echo(False)
-    assert port.written[-1] == "ECHO0"
-    assert drive.transport.echo is False
+def test_unknown_parameter_name_raises_with_a_hint(drive):
+    with pytest.raises(KeyError) as exc:
+        drive.get("nonesuch")
+    assert "gain_p" in str(exc.value)
+
+
+def test_snapshot_covers_every_group(drive):
+    snap = drive.snapshot()
+    assert set(snap) == set(PARAMETERS)
+    assert snap["identity"]["revision"] == "Aries OS Revision 3.30"
+    assert snap["motor_config"]["poles"] == "16"
+
+
+def test_snapshot_can_be_limited_to_one_group(drive):
+    assert set(drive.snapshot(groups=["power"])) == {"power"}
+
+
+def test_snapshot_reports_unsupported_parameters_as_none(drive, port):
+    del port.replies["TVBUS"]  # now answers ERROR: Unknown Command
+    assert drive.snapshot(groups=["power"])["power"]["bus_voltage"] is None
+
+
+def test_snapshot_never_raises_on_a_dead_parameter(port):
+    port.replies.clear()
+    snap = AriesDrive(byte_port=port, timeout=0.3).connect().snapshot()
+    assert all(v is None for g in snap.values() for v in g.values())
+
+
+def test_every_registered_parameter_has_a_command():
+    assert len(PARAMETER_COMMANDS) == sum(len(g) for g in PARAMETERS.values())
 
 
 def test_demo_drive_helper_is_connected():
     d = demo_drive()
     assert d.is_connected
-    assert d.revision().startswith("92-")
+    assert d.revision().startswith("Aries OS")

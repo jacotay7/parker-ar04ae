@@ -1,26 +1,18 @@
 """High-level interface to a Parker ARIES AR-04AE servo drive.
 
 Wiring on a Mac is USB-C -> USB-A -> USB/RS-232 adapter -> the drive's RS-232
-port, which shows up as ``/dev/cu.usbserial-*``. Use the ``cu.*`` node, not the
-``tty.*`` one: ``tty.*`` blocks on open waiting for carrier detect.
+port. See the README for the driver a Prolific PL2303 adapter needs.
 
     from parker_ar04ae import AriesDrive
 
-    with AriesDrive("/dev/cu.usbserial-A50285BI") as drive:
-        print(drive.revision())
-        print(drive.axis_status().as_bits())
+    with AriesDrive("/dev/cu.PL2303G-USBtoUART10") as drive:
+        print(drive.revision())          # 'Aries OS Revision 3.30'
+        print(drive.bus_voltage())       # 163.1
+        print(drive.axis_status().set_bits())
 
-Command coverage
-----------------
-The AR-04AE is the *drive-only* member of the ARIES family: it follows step/
-direction or +/-10V analog command from an external controller, and its RS-232
-port is there for configuration and diagnostics. The methods under "motion" are
-onboard-move commands that exist on the ARIES Controller (AR-xxCE); on an AE
-unit they are expected to answer ``*UNDEFINED_COMMAND``. They are included so a
-CE unit works with the same class, and are marked in their docstrings.
-
-Any command can be sent verbatim with :meth:`raw`, so nothing is gated on this
-module knowing about it.
+Every command wrapped here was verified against an AR-04AE running Aries OS
+3.30; :data:`PARAMETERS` records the set. Anything else can be sent with
+:meth:`raw`, so the class never gets in the way of a command it does not know.
 """
 
 from __future__ import annotations
@@ -29,16 +21,85 @@ import logging
 from typing import Optional, Union
 
 from .errors import CommandError, ConnectionError_, TimeoutError_
-from .response import ERROR_TOKENS, Response
+from .protocol import DEFAULT_BAUD, ERROR_PREFIX
+from .response import Response
 from .transport import BytePort, SerialPort, SerialTransport
 
 log = logging.getLogger(__name__)
 
 Number = Union[int, float]
 
-#: Baud rates the ARIES RS-232 port can be configured for. 9600 is the factory
-#: default and what ``probe`` tries first.
+#: Baud rates to sweep when probing. 9600 is the factory default.
 BAUD_RATES = (9600, 19200, 38400, 57600, 115200)
+
+#: Readable parameters, grouped as the manual groups them:
+#: ``name -> (command, description)``. Sending the bare command reads the
+#: value; appending a value writes it. Used by :meth:`AriesDrive.snapshot`.
+PARAMETERS: dict[str, dict[str, tuple[str, str]]] = {
+    "identity": {
+        "revision": ("TREV", "firmware revision"),
+        "motor": ("DMTR", "configured motor"),
+        "address": ("ADDR", "daisy-chain unit address"),
+        "echo": ("ECHO", "serial echo enabled"),
+        "error_level": ("ERRLVL", "error reporting verbosity"),
+    },
+    "status": {
+        "enabled": ("DRIVE", "drive enabled"),
+        "axis_status": ("TAS", "axis status bits"),
+        "inputs": ("TIN", "digital input states"),
+        "outputs": ("TOUT", "digital output states"),
+    },
+    "feedback": {
+        "position": ("TPE", "encoder position, counts"),
+        "commanded_position": ("TPC", "commanded position, counts"),
+        "position_error": ("TPER", "following error, counts"),
+        "velocity": ("TVEL", "commanded velocity"),
+        "actual_velocity": ("TVELA", "actual velocity"),
+        "torque": ("TTRQ", "torque"),
+        "analog_input": ("TANI", "analog command input, volts"),
+    },
+    "power": {
+        "bus_voltage": ("TVBUS", "DC bus voltage"),
+        "drive_temperature": ("TDTEMP", "drive temperature, degC"),
+        "motor_temperature": ("TMTEMP", "motor temperature, degC"),
+    },
+    "drive_config": {
+        "drive_mode": ("DMODE", "command source / drive mode"),
+        "encoder_resolution": ("ERES", "encoder resolution, counts/rev"),
+        "resolution": ("DRES", "drive resolution, counts/rev"),
+        "current_foldback": ("DIFOLD", "current foldback enabled"),
+        "thermal_mode": ("DTHERM", "motor thermal protection mode"),
+        "pwm_frequency": ("DPWM", "PWM frequency setting"),
+    },
+    "motor_config": {
+        "continuous_current": ("DMTIC", "motor continuous current, A"),
+        "current_limit": ("DMTLIM", "motor current limit, A"),
+        "peak_current_time": ("DMTW", "peak current duration"),
+        "back_emf": ("DMTKE", "back-EMF constant"),
+        "winding_resistance": ("DMTRES", "winding resistance, ohm"),
+        "winding_inductance": ("DMTIND", "winding inductance, mH"),
+        "poles": ("DPOLE", "motor poles"),
+        "inertia": ("DMTJ", "rotor inertia"),
+        "damping": ("DMTD", "damping"),
+        "encoder_pitch": ("DMEPIT", "encoder pitch"),
+    },
+    "servo_gains": {
+        "gain_p": ("SGP", "proportional gain"),
+        "gain_i": ("SGI", "integral gain"),
+        "gain_v": ("SGV", "velocity gain"),
+        "gain_vf": ("SGVF", "velocity feedforward"),
+        "gain_af": ("SGAF", "acceleration feedforward"),
+        "feedback_source": ("SFB", "servo feedback source"),
+        "max_position_error": ("SMPER", "maximum allowable position error"),
+    },
+}
+
+#: Flat ``name -> command`` view of :data:`PARAMETERS`.
+PARAMETER_COMMANDS: dict[str, str] = {
+    name: cmd
+    for group in PARAMETERS.values()
+    for name, (cmd, _) in group.items()
+}
 
 
 class AriesDrive:
@@ -47,15 +108,15 @@ class AriesDrive:
     Parameters
     ----------
     port:
-        Device path, e.g. ``/dev/cu.usbserial-1420``. Ignored if ``transport``
-        is given.
+        Device path, e.g. ``/dev/cu.PL2303G-USBtoUART10``. Ignored if
+        ``transport`` is given.
     baudrate:
         Serial speed; must match the drive's own setting.
     address:
         Unit address for a daisy chain. When set, commands go out prefixed as
         ``<address>_COMMAND``. Leave as ``None`` for a single drive.
     timeout:
-        Seconds to wait for the first byte of a response.
+        Seconds to wait for the drive's end-of-response prompt.
     strict:
         Raise :class:`CommandError` when the drive reports an error. Set
         ``False`` to get the error back in the :class:`Response` instead.
@@ -66,13 +127,13 @@ class AriesDrive:
     def __init__(
         self,
         port: Optional[str] = None,
-        baudrate: int = 9600,
+        baudrate: int = DEFAULT_BAUD,
         address: Optional[int] = None,
         timeout: float = 1.0,
         strict: bool = True,
         transport: Optional[SerialTransport] = None,
         byte_port: Optional[BytePort] = None,
-        error_tokens: frozenset = ERROR_TOKENS,
+        error_prefix: str = ERROR_PREFIX,
     ):
         if transport is None:
             if byte_port is None:
@@ -83,7 +144,7 @@ class AriesDrive:
         self.transport = transport
         self.address = address
         self.strict = strict
-        self.error_tokens = error_tokens
+        self.error_prefix = error_prefix
 
     # -- lifecycle ---------------------------------------------------------
     def connect(self) -> "AriesDrive":
@@ -116,22 +177,22 @@ class AriesDrive:
         command: str,
         *args: object,
         timeout: Optional[float] = None,
-        quiet_time: Optional[float] = None,
         strict: Optional[bool] = None,
     ) -> Response:
         """Send ``command`` verbatim and return the parsed :class:`Response`.
 
-        Arguments are concatenated directly onto the command, matching Parker's
-        syntax (``DMTR`` + ``BE231FJ`` -> ``DMTRBE231FJ``).
+        Arguments are concatenated directly onto the command, which is the
+        drive's own syntax: ``raw("SGP", 2.0)`` sends ``SGP2.0``. Sending a
+        command bare reads the current value.
         """
         if not self.is_connected:
             raise ConnectionError_("drive is not connected; call connect() first")
         text = self._format(command, args)
-        lines = self.transport.exchange(text, timeout=timeout, quiet_time=quiet_time)
-        resp = Response(command=text, lines=lines, error_tokens=self.error_tokens)
+        lines = self.transport.exchange(text, timeout=timeout)
+        resp = Response(command=text, lines=lines, error_prefix=self.error_prefix)
         strict = self.strict if strict is None else strict
         if strict and resp.is_error:
-            raise CommandError(text, resp.error_code or "UNKNOWN", resp.text)
+            raise CommandError(text, resp.error_message or "unknown error", resp.text)
         return resp
 
     def query(self, command: str, *args: object, **kw) -> Response:
@@ -148,34 +209,62 @@ class AriesDrive:
         except (ConnectionError_, TimeoutError_, OSError):
             return False
 
-    # -- identity and diagnostics -----------------------------------------
+    # -- generic parameter access -----------------------------------------
+    def get(self, name: str, **kw) -> Response:
+        """Read a parameter by its friendly name from :data:`PARAMETERS`."""
+        return self.query(self._command_for(name), **kw)
+
+    def set(self, name: str, value: object, **kw) -> Response:
+        """Write a parameter by its friendly name.
+
+        Writes were not exercised during bring-up - only reads were. Check the
+        value with :meth:`get` afterwards, and see the README on persistence
+        before assuming a change survives a power cycle.
+        """
+        return self.raw(self._command_for(name), value, **kw)
+
+    @staticmethod
+    def _command_for(name: str) -> str:
+        try:
+            return PARAMETER_COMMANDS[name]
+        except KeyError:
+            known = ", ".join(sorted(PARAMETER_COMMANDS))
+            raise KeyError(f"unknown parameter {name!r}; known names: {known}") from None
+
+    def snapshot(self, groups: Optional[list[str]] = None) -> dict[str, dict[str, str]]:
+        """Read every parameter and return ``{group: {name: value}}``.
+
+        Never raises on an unsupported command: a parameter the firmware does
+        not know is reported as ``None`` rather than aborting the sweep, so this
+        doubles as a way to see what a given unit supports.
+        """
+        out: dict[str, dict[str, str]] = {}
+        for group, entries in PARAMETERS.items():
+            if groups and group not in groups:
+                continue
+            out[group] = {}
+            for name, (cmd, _) in entries.items():
+                resp = self.raw(cmd, strict=False)
+                out[group][name] = None if resp.empty or resp.is_error else resp.value
+        return out
+
+    # -- identity ----------------------------------------------------------
     def revision(self) -> str:
-        """Firmware/product revision (``TREV``)."""
+        """Firmware revision (``TREV``), e.g. ``Aries OS Revision 3.30``."""
         return self.query("TREV").value
 
-    def status_report(self, timeout: float = 3.0) -> list[str]:
-        """The full multi-line status page (``TSTAT``).
+    def motor(self) -> str:
+        """Configured motor (``DMTR``), e.g. ``OTHER=R200D``."""
+        return self.query("DMTR").value
 
-        Slower and chattier than the individual queries; a longer timeout and
-        quiet time are used so the whole page is captured.
-        """
-        return self.query("TSTAT", timeout=timeout, quiet_time=0.4).lines
-
+    # -- status ------------------------------------------------------------
     def axis_status(self) -> Response:
-        """Axis status bits (``TAS``). Use ``.bit(n)`` with the manual's numbering."""
+        """Axis status bits (``TAS``).
+
+        Use ``.bit(n)`` with the manual's one-based numbering, or
+        ``.set_bits()`` for the positions that are set.
+        """
         return self.query("TAS")
-
-    def extended_status(self) -> Response:
-        """Extended axis status bits (``TASX``)."""
-        return self.query("TASX")
-
-    def error_status(self) -> Response:
-        """Error status bits (``TER``)."""
-        return self.query("TER")
-
-    def drive_fault(self) -> bool:
-        """True if any bit of ``TER`` is set."""
-        return "1" in self.error_status().as_bits()
 
     def input_states(self) -> Response:
         """Digital input states (``TIN``)."""
@@ -185,13 +274,9 @@ class AriesDrive:
         """Digital output states (``TOUT``)."""
         return self.query("TOUT")
 
-    def analog_input(self) -> float:
-        """Analog command input in volts (``TANI``)."""
-        return self.query("TANI").as_float()
-
-    def drive_temperature(self) -> float:
-        """Drive heatsink temperature (``TDTEMP``)."""
-        return self.query("TDTEMP").as_float()
+    def is_enabled(self) -> bool:
+        """Current enable state (``DRIVE``)."""
+        return self.query("DRIVE").as_bool()
 
     # -- feedback ----------------------------------------------------------
     def position(self) -> int:
@@ -207,22 +292,40 @@ class AriesDrive:
         return self.query("TPER").as_int()
 
     def velocity(self) -> float:
-        """Actual velocity (``TVEL``)."""
+        """Commanded velocity (``TVEL``)."""
         return self.query("TVEL").as_float()
 
-    def current(self) -> float:
-        """Commanded motor current in amps (``TCMD``)."""
-        return self.query("TCMD").as_float()
+    def actual_velocity(self) -> float:
+        """Actual velocity (``TVELA``)."""
+        return self.query("TVELA").as_float()
 
-    def feedback(self) -> Response:
-        """All feedback-device positions (``TFB``)."""
-        return self.query("TFB")
+    def torque(self) -> float:
+        """Torque (``TTRQ``)."""
+        return self.query("TTRQ").as_float()
 
-    # -- drive enable ------------------------------------------------------
+    def analog_input(self) -> float:
+        """Analog command input in volts (``TANI``)."""
+        return self.query("TANI").as_float()
+
+    # -- power -------------------------------------------------------------
+    def bus_voltage(self) -> float:
+        """DC bus voltage (``TVBUS``)."""
+        return self.query("TVBUS").as_float()
+
+    def drive_temperature(self) -> float:
+        """Drive temperature in degrees C (``TDTEMP``)."""
+        return self.query("TDTEMP").as_float()
+
+    def motor_temperature(self) -> float:
+        """Motor temperature in degrees C (``TMTEMP``)."""
+        return self.query("TMTEMP").as_float()
+
+    # -- enable ------------------------------------------------------------
     def enable(self) -> Response:
         """Energise the motor (``DRIVE1``).
 
-        The motor holds position after this; make sure the axis is clear.
+        The motor holds position after this; make sure the axis is clear. Not
+        exercised during bring-up.
         """
         return self.raw("DRIVE1")
 
@@ -230,89 +333,13 @@ class AriesDrive:
         """De-energise the motor (``DRIVE0``). The load is free to move."""
         return self.raw("DRIVE0")
 
-    def is_enabled(self) -> bool:
-        """Current enable state (``DRIVE``)."""
-        return self.query("DRIVE").as_bool()
-
     def reset(self) -> None:
         """Reset the drive (``RESET``).
 
         Equivalent to a power cycle: the drive drops off the serial link for
-        several seconds and does not answer, so no response is read.
+        several seconds, so no response is read. Not exercised during bring-up.
         """
         self.transport.write_line(self._format("RESET", ()))
-
-    # -- configuration -----------------------------------------------------
-    def motor(self, part_number: Optional[str] = None) -> Response:
-        """Read or set the configured motor (``DMTR``).
-
-        Called with no argument this reads the current selection. Passing a
-        Parker motor part number selects it; the drive must be disabled.
-        """
-        return self.query("DMTR") if part_number is None else self.raw("DMTR", part_number)
-
-    def drive_mode(self, mode: Optional[int] = None) -> Response:
-        """Read or set the command source / drive mode (``DMODE``)."""
-        return self.query("DMODE") if mode is None else self.raw("DMODE", mode)
-
-    def encoder_resolution(self, counts: Optional[int] = None) -> Response:
-        """Read or set encoder resolution in counts/rev (``ERES``)."""
-        return self.query("ERES") if counts is None else self.raw("ERES", counts)
-
-    def set_echo(self, on: bool) -> Response:
-        """Turn the drive's character echo on or off (``ECHO``).
-
-        The transport strips echoes either way, so this is mostly for quieting
-        the link. Keep :attr:`SerialTransport.echo` in step if you change it.
-        """
-        resp = self.raw("ECHO", 1 if on else 0)
-        self.transport.echo = on
-        return resp
-
-    def set_address(self, address: int) -> Response:
-        """Set the daisy-chain unit address (``ADDR``)."""
-        return self.raw("ADDR", address)
-
-    # -- motion (ARIES Controller AR-xxCE only; see module docstring) ------
-    def go(self) -> Response:
-        """Start a move (``GO``). *AR-xxCE only.*"""
-        return self.raw("GO")
-
-    def stop(self) -> Response:
-        """Decelerate to a stop (``S``). *AR-xxCE only.*"""
-        return self.raw("S")
-
-    def kill(self) -> Response:
-        """Abort motion immediately (``K``). *AR-xxCE only.*
-
-        This is not a safety stop; it is not a substitute for the drive's
-        hardware enable or an E-stop circuit.
-        """
-        return self.raw("K")
-
-    def set_distance(self, counts: int) -> Response:
-        """Set move distance/target in counts (``D``). *AR-xxCE only.*"""
-        return self.raw("D", counts)
-
-    def set_velocity(self, value: Number) -> Response:
-        """Set move velocity in rev/s (``V``). *AR-xxCE only.*"""
-        return self.raw("V", value)
-
-    def set_acceleration(self, value: Number) -> Response:
-        """Set acceleration in rev/s^2 (``A``). *AR-xxCE only.*"""
-        return self.raw("A", value)
-
-    def set_deceleration(self, value: Number) -> Response:
-        """Set deceleration in rev/s^2 (``AD``). *AR-xxCE only.*"""
-        return self.raw("AD", value)
-
-    def set_absolute_mode(self, absolute: bool = True) -> Response:
-        """Absolute (``MA1``) or incremental (``MA0``) positioning. *AR-xxCE only.*"""
-        return self.raw("MA", 1 if absolute else 0)
-
-    def home(self) -> Response:
-        """Start the homing move (``HOM``). *AR-xxCE only.*"""
-        return self.raw("HOM")
 
     def __repr__(self) -> str:
         state = "connected" if self.is_connected else "closed"

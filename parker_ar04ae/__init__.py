@@ -1,6 +1,6 @@
 """Serial control library for the Parker Hannifin ARIES AR-04AE servo drive."""
 
-from .drive import BAUD_RATES, AriesDrive
+from .drive import BAUD_RATES, PARAMETER_COMMANDS, PARAMETERS, AriesDrive
 from .errors import (
     AriesConnectionError,
     AriesError,
@@ -10,11 +10,13 @@ from .errors import (
 from .response import Response
 from .transport import BytePort, SerialPort, SerialTransport
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AriesDrive",
     "BAUD_RATES",
+    "PARAMETERS",
+    "PARAMETER_COMMANDS",
     "AriesError",
     "AriesConnectionError",
     "AriesTimeoutError",
