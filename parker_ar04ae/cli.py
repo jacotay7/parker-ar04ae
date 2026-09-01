@@ -15,6 +15,7 @@ import sys
 import time
 
 from .drive import BAUD_RATES, PARAMETERS, AriesDrive
+from .reference import DRIVE_MODES
 from .errors import AriesError
 
 
@@ -123,13 +124,14 @@ def cmd_info(args) -> int:
     for group, entries in snap.items():
         print(f"\n[{group}]")
         for name, value in entries.items():
-            cmd = PARAMETERS[group][name][0]
+            cmd, _desc, source = PARAMETERS[group][name]
+            tag = "" if source == "hw" else "  (manual only)"
             if value is None:
                 unsupported.append(cmd)
                 if args.all:
-                    print(f"  {name:<20} {cmd:<8} -")
+                    print(f"  {name:<24} {cmd:<8} -{tag}")
             else:
-                print(f"  {name:<20} {cmd:<8} {value}")
+                print(f"  {name:<24} {cmd:<8} {value}{tag}")
     if unsupported:
         print(f"\nNot supported by this unit: {', '.join(unsupported)}")
     return 0
@@ -148,6 +150,75 @@ def cmd_monitor(args) -> int:
                 time.sleep(args.interval)
         except KeyboardInterrupt:
             print()
+    return 0
+
+
+def cmd_errors(args) -> int:
+    """Show the drive's active errors, decoded."""
+    with AriesDrive(args.port, baudrate=args.baud or 9600, timeout=args.timeout) as d:
+        try:
+            active = d.active_errors()
+        except AriesError as exc:
+            print(f"could not read ERROR: {exc}")
+            return 1
+        if not active:
+            print("no active errors")
+            return 0
+        for code, desc in active:
+            print(f"  {code}  {desc}")
+    return 1
+
+
+def cmd_status(args) -> int:
+    """Print the STATUS full-text report, and the error log with --log."""
+    with AriesDrive(args.port, baudrate=args.baud or 9600, timeout=args.timeout) as d:
+        for line in d.raw("STATUS", timeout=4.0, strict=False).lines:
+            print(f"  {line}")
+        if args.log:
+            print("\n--- error log (TERRLG) ---")
+            for line in d.raw("TERRLG", timeout=5.0, strict=False).lines:
+                print(f"  {line}")
+    return 0
+
+
+def cmd_check(args) -> int:
+    """Pre-enable safety check: would enabling command motion right now?"""
+    with AriesDrive(args.port, baudrate=args.baud or 9600, timeout=args.timeout) as d:
+        print(f"  {d.revision()}")
+        mode = d.raw("DMODE", strict=False)
+        if not mode.empty:
+            m = mode.as_int()
+            print(f"  mode          DMODE{m} ({DRIVE_MODES.get(m, ('unknown',))[0]})")
+        for label, cmd in [("analog input", "TANI"), ("zero point", "DCMDZ"),
+                           ("deadband", "ANICDB"), ("enabled", "DRIVE"),
+                           ("bus voltage", "TVBUS")]:
+            r = d.raw(cmd, strict=False)
+            print(f"  {label:<13} {r.value if not r.empty else '(not supported)'}")
+
+        try:
+            active = d.active_errors()
+        except AriesError:
+            active = None
+        print("\n  active errors:")
+        if active is None:
+            print("    (ERROR not supported on this firmware)")
+        elif not active:
+            print("    none")
+        else:
+            for code, desc in active:
+                print(f"    {code}  {desc}")
+
+        try:
+            will_move, why = d.will_move_on_enable()
+        except AriesError as exc:
+            print(f"\n  could not evaluate: {exc}")
+            return 1
+        print()
+        if will_move:
+            print(f"  UNSAFE TO ENABLE: {why}")
+            print("  Zero the command input (short AIN+ to AIN-, then DCMDZ) first.")
+            return 1
+        print(f"  safe to enable: {why}")
     return 0
 
 
@@ -198,6 +269,14 @@ def main(argv: list[str] | None = None) -> int:
     p = with_port(sub.add_parser("monitor", help="poll position/velocity/torque"))
     p.add_argument("-i", "--interval", type=float, default=0.25)
     p.set_defaults(func=cmd_monitor)
+
+    with_port(sub.add_parser("errors", help="show active errors, decoded")).set_defaults(func=cmd_errors)
+
+    p = with_port(sub.add_parser("status", help="STATUS full-text report"))
+    p.add_argument("--log", action="store_true", help="also print the TERRLG error log")
+    p.set_defaults(func=cmd_status)
+
+    with_port(sub.add_parser("check", help="pre-enable safety check")).set_defaults(func=cmd_check)
 
     with_port(sub.add_parser("term", help="interactive command terminal")).set_defaults(func=cmd_term)
 

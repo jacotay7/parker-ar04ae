@@ -29,6 +29,8 @@ def run(drive) -> int:
         ("drive temp", lambda: f"{drive.drive_temperature():.2f} C"),
         ("motor temp", lambda: f"{drive.motor_temperature():.2f} C"),
         ("motor", drive.motor),
+        ("mode", lambda: f"DMODE{drive.drive_mode()} ({drive.drive_mode_name()})"),
+        ("feedback", drive.feedback_type),
         ("enabled", lambda: "yes" if drive.is_enabled() else "no"),
         ("position", lambda: f"{drive.position()} counts"),
         ("following err", lambda: f"{drive.position_error()} counts"),
@@ -57,6 +59,26 @@ def run(drive) -> int:
         for name, value in entries.items():
             if value is not None:
                 print(f"    {name:<20} {value}")
+
+    print("\n== active errors ==")
+    try:
+        active = drive.active_errors()
+        if not active:
+            print("  none")
+        for code, desc in active:
+            print(f"  {code}  {desc}")
+    except AriesError as exc:
+        print(f"  ERROR command unavailable ({exc})")
+
+    print("\n== safe to enable? ==")
+    try:
+        will_move, why = drive.will_move_on_enable()
+        print(f"  {'NO - ' if will_move else 'yes - '}{why}")
+        if will_move:
+            print("  Short AIN+ to AIN- on the DRIVE I/O connector and run DCMDZ")
+            print("  to zero the command input before enabling.")
+    except AriesError as exc:
+        print(f"  could not evaluate ({exc})")
 
     print("\nRead-only check complete. Nothing was enabled or commanded to move.")
     return 0

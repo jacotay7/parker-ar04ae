@@ -103,6 +103,9 @@ python -m parker_ar04ae info    -p /dev/cu.PL2303G-USBtoUART10
 python -m parker_ar04ae info    -p ... -g servo_gains      # one group
 python -m parker_ar04ae info    -p ... --all               # include unsupported commands
 python -m parker_ar04ae monitor -p ...    # poll position/velocity/torque
+python -m parker_ar04ae check   -p ...    # pre-enable safety check
+python -m parker_ar04ae errors  -p ...    # active errors, decoded
+python -m parker_ar04ae status  -p ... --log   # STATUS report, plus TERRLG
 python -m parker_ar04ae term    -p ...    # type commands directly
 ```
 
@@ -211,25 +214,51 @@ drive.reset()      # returns ~2.3 - seconds until the drive answered again
 `reset()` waits for the link to both drop *and* recover, so you cannot read stale
 values off a drive that has not finished rebooting.
 
-## Verified command set
+## Command set
 
-Everything in `PARAMETERS` was confirmed against Aries OS 3.30. `python -m
-parker_ar04ae info` reads the lot.
+84 parameters in `PARAMETERS`, plus the text reports. Each is tagged by source:
+**hw** = confirmed against an AR-04AE running Aries OS 3.30, **doc** = taken from the
+Rev G manual in [manuals/](manuals/) but not yet seen on hardware. `info` marks the
+manual-only ones, and `snapshot()` reports anything the firmware rejects as `None`
+rather than failing.
 
 | Group | Commands |
 | --- | --- |
 | identity | `TREV` `DMTR` `ADDR` `ECHO` `ERRLVL` |
 | status | `DRIVE` `TAS` `TIN` `TOUT` |
-| feedback | `TPE` `TPC` `TPER` `TVEL` `TVELA` `TTRQ` `TANI` |
-| power | `TVBUS` `TDTEMP` `TMTEMP` |
-| drive config | `DMODE` `ERES` `DRES` `DIFOLD` `DTHERM` `DPWM` |
-| motor config | `DMTIC` `DMTLIM` `DMTW` `DMTKE` `DMTRES` `DMTIND` `DPOLE` `DMTJ` `DMTD` `DMEPIT` |
-| servo gains | `SGP` `SGI` `SGV` `SGVF` `SGAF` `SFB` `SMPER` |
+| feedback | `TPE` `TPC` `TPER` `TVEL` `TVELA` `TTRQ` `TANI` · *doc:* `TVER` `TTRQA` `TCI` `THALL` |
+| power | `TVBUS` `TDTEMP` `TMTEMP` · *doc:* `TDICNT` `TDIMAX` `TSSPD` |
+| runtime | *doc:* `TDHRS` `TDMIN` `TDSEC` |
+| drive config | `DMODE` `ERES` `DRES` `SFB` `DIFOLD` `DTHERM` `DPWM` · *doc:* `CMDDIR` `DMPSCL` `IANI` `ANICDB` `FLTDSB` `FLTSTP` `ENCFLT` `ENCOFF` `ENCPOL` `SHALL` `OHALL` `P163` |
+| motor config | `DMTIC` `DMTLIM` `DMTW` `DMTKE` `DMTRES` `DMTIND` `DPOLE` `DMTJ` `DMTD` `DMEPIT` · *doc:* `DMTIP` `DMTINF` `DMTSCL` `DMVSCL` `DMVLIM` `DMTAMB` `DMTMAX` `DMTRWC` `DMTTCM` `DMTTCW` `DMTSWT` `DMTICD` |
+| servo gains | `SGP` `SGI` `SGV` `SGVF` `SGAF` `SMPER` · *doc:* `SGILIM` `SMVER` `SMAV` `PGAIN` `IGAIN` `DIBW` `IAUTO` `LJRAT` |
 
-**Not present on this firmware** (they return `ERROR: Unknown Command`): `TSTAT`,
-`TASX`, `TER`, `TCMD`, `TFB`, `HELP`, `?`. There is no command that enumerates the
-command set, and no dedicated fault-status query was found — fault state appears to
-live in the `TAS` bits.
+Text reports: `ERROR`, `STATUS`, `TERRLG`, `CERRLG`, `CONFIG`.
+
+```python
+drive.active_errors()   # [('E46', 'No hardware enable - ... pins 1 and 21 - is open')]
+drive.status()          # STATUS full-text report, as lines
+drive.error_log()       # TERRLG - last ten errors or power cycles
+drive.drive_mode_name() # 'Velocity Control'
+drive.feedback_type()   # 'smart encoder (OS 2.10+)'
+```
+
+### Firmware is newer than the manual
+
+Rev G documents Aries OS 1.0–3.10; this drive reports **OS 3.30**. That cuts both ways:
+`TAS`, `TIN` and `ERRLVL` work on the drive but appear **nowhere** in Rev G, while
+`TSTAT` — which I originally guessed at — does not exist. The manual's full-text
+report is `STATUS`. Treat [reference.py](parker_ar04ae/reference.py) as the manual's
+account, not a guarantee about a given unit.
+
+### Command syntax
+
+- Line limit is **32 characters**, enforced by `raw()`.
+- Bare command reads; appending a value writes (`SGP2.0`).
+- `DCMDZ` is the exception — it uses `=` (`DCMDZ=0.5`), so it has its own method,
+  `zero_command_offset()`.
+- On **RS-485** every response is prefixed `*` and units need an address
+  (`2_TREV`); on RS-232 replies are bare. Set `address=` for a multi-drop network.
 
 ## Testing without hardware
 
@@ -249,7 +278,7 @@ assert port.written == ["TREV"]        # what actually went on the wire
 `DEMO_REPLIES` holds values captured from the real drive.
 
 ```bash
-python -m pytest                          # 85 tests, no hardware needed
+python -m pytest                          # 112 tests, no hardware needed
 python examples/basic_test.py --demo      # the bring-up script against the fake
 python examples/basic_test.py /dev/cu.PL2303G-USBtoUART10
 ```
@@ -262,53 +291,76 @@ python examples/basic_test.py /dev/cu.PL2303G-USBtoUART10
 | [transport.py](parker_ar04ae/transport.py) | `BytePort` (pyserial / fake) and `SerialTransport` framing |
 | [response.py](parker_ar04ae/response.py) | Reply parsing: values, typed accessors, status bits, errors |
 | [drive.py](parker_ar04ae/drive.py) | `AriesDrive` and the `PARAMETERS` registry |
+| [reference.py](parker_ar04ae/reference.py) | Lookup tables transcribed from the Rev G manual |
 | [testing.py](parker_ar04ae/testing.py) | `FakePort`, `DEMO_REPLIES`, `demo_drive()` |
 | [cli.py](parker_ar04ae/cli.py) | `ports` / `probe` / `info` / `term` / `monitor` |
 
-## Verified on hardware
+## Why this drive will not enable
 
-Everything below was exercised against the drive, not inferred:
+`DRIVE1` is accepted silently and `DRIVE` still reads `0`. The manual gives the check
+and the answer:
 
-- **Reads** — all 40 commands in `PARAMETERS`.
-- **Writes** — `ERRLVL` and `SGI` written, read back, and restored. Writes take
-  effect and are unacknowledged; the library reads back to confirm.
-- **Persistence** — a written value survived a confirmed reboot. No save command.
-- **`reset()`** — the drive is unreachable for roughly 2 s; the echo is cut off
-  mid-word as it goes down.
-- **`enable()` / `disable()`** — exercised with the motor connected and free.
+> To verify the hardware enable input is open, query the ERROR command for
+> **E46 – Hardware Enable**. `0 = Hardware Enable (Drive I/O Pin 1 and 21)`,
+> `1 = No Hardware Enable`
 
-### This drive will not enable
-
-`DRIVE1` is accepted silently but `DRIVE` still reads `0`, with `TAS` clear and the
-bus at ~163 V. `enable()` turns that silent failure into a `VerificationError`:
+So the hardware enable interlock across **Drive I/O pins 1 and 21** must be closed.
+`enable()` now reports the drive's own reason rather than a guess:
 
 ```
 VerificationError: 'DRIVE1' did not take effect: expected True, read back False.
-the drive refused to enable. Check the hardware enable input (TIN), the axis
-status bits (TAS) and the bus voltage (TVBUS)
+the drive refused to enable: E46 No hardware enable - the hardware enable input
+(Drive I/O pins 1 and 21) is open
 ```
 
-`TIN` reads `0000_0000_0000_0000` — no digital input asserted — so the most likely
-cause is an unasserted hardware enable input on the drive's I/O connector. Check the
-manual's enable-input wiring for your unit.
+Per the manual, if that input is closed at power-up the drive enables itself.
 
-### Before you do get it enabling
+## The motor will move the moment it enables
 
-`TANI` reads a steady **~0.93 V** with the drive idle and disabled — five consecutive
-samples within 0.001 V, so it is a real standing command, not noise. This unit reports
-`DMODE 4`. If that is an analog velocity or torque mode, the motor will act on that
-0.93 V the instant it is energised, with no `GO` needed. Confirm what `DMODE 4` is and
-zero or disconnect the ±10 V command input before the first successful enable.
+`DMODE 4` is confirmed as **Velocity Control** — "direct control of rotary or linear
+motor velocity". The drive acts on the analog command input as soon as it is
+energised; there is no separate "go". With `TANI` sitting at a steady ~0.93 V, a zero
+point of 0.00 V and a 0.04 V deadband, that is a live velocity command.
 
-`enable()` energises the motor and it will hold position. Nothing here is a safety
-function or a substitute for the hardware enable or an E-stop circuit.
+Check before energising:
+
+```bash
+python -m parker_ar04ae check -p /dev/cu.PL2303G-USBtoUART110
+```
+
+```
+UNSAFE TO ENABLE: DMODE4 (Velocity Control): input is 0.940 V, 0.940 V from the
+0.000 V zero point and outside the 0.040 V deadband - the motor will move on enable
+```
+
+The fix, from the `DCMDZ` entry: short **AIN+ to AIN-** on the DRIVE I/O connector (or
+command 0 V from the controller), then call `zero_command_offset()` — bare `DCMDZ`
+takes the present input voltage as the new zero.
+
+`will_move_on_enable()` is a best-effort aid that reads three parameters over a serial
+link. It is **not an interlock** and cannot see what the controller does next. Nothing
+here substitutes for the hardware enable or an E-stop.
+
+## Next session at the drive
+
+In order:
+
+1. `python -m parker_ar04ae info --all` — confirms which *doc* commands exist on
+   OS 3.30. Anything showing `-` is absent.
+2. `python -m parker_ar04ae status --log` — first look at `STATUS` and `TERRLG`.
+   Neither has run against hardware.
+3. `python -m parker_ar04ae errors` — expected to report `E46`, confirming the
+   enable-input diagnosis.
+4. Close the enable interlock across Drive I/O pins 1 and 21.
+5. `python -m parker_ar04ae check` — must say *safe to enable* before going further.
+   If not, zero the command input first.
+6. Only then `enable()`, with the motor still free of any load.
 
 ## Still unconfirmed
 
-- **No motion commands are wrapped.** The AR-04AE is the drive-only ARIES variant: it
-  follows step/direction or ±10 V analog command from an external controller. Nothing
-  was commanded to move, since the drive would not enable.
-- **`DMODE 4` semantics.** Read from the drive, but its meaning is not established.
-- **Write coverage.** Two parameters were written and restored. The mechanism is the
-  same for all of them, but not every parameter was individually exercised, and some
-  may be rejected while the drive is enabled.
+- Every **doc**-tagged command above, and all the text reports — read from the manual,
+  not yet seen on this firmware.
+- **Motion.** Nothing has been commanded to move; the drive has never enabled.
+- **Write coverage.** `ERRLVL` and `SGI` were written and restored. The mechanism is
+  identical for the rest, but some parameters may be rejected while enabled, and
+  several (`DRES`, `IANI`) are documented as requiring a reset to take effect.

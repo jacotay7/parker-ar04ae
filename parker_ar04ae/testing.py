@@ -21,9 +21,10 @@ from .transport import BytePort
 
 Reply = Union[str, list, Callable[[str], str], None]
 
-#: A write carries a numeric value, e.g. ``SGI0.1`` or ``DRIVE1``. Requiring
-#: that keeps ``TASX`` from being read as a write of ``X`` to ``TAS``.
-_NUMERIC = re.compile(r"^[-+]?(?:\d+\.?\d*|\.\d+)$")
+#: A write carries a numeric value, e.g. ``SGI0.1``, ``DRIVE1`` or - for DCMDZ,
+#: which uses an ``=`` in its documented syntax - ``DCMDZ=0.5``. Requiring a
+#: numeric suffix keeps ``TASX`` from being read as a write of ``X`` to ``TAS``.
+_NUMERIC = re.compile(r"^=?[-+]?(?:\d+\.?\d*|\.\d+)$")
 
 
 class FakePort(BytePort):
@@ -128,7 +129,7 @@ class FakePort(BytePort):
             if write is not None:
                 name, value = write
                 if name not in self.refuse:
-                    self.replies[name] = value
+                    self.replies[name] = value.lstrip("=")
                 return  # a write echoes and says nothing more - no ENQ
 
         reply = self.replies.get(command.upper(), self.default)
@@ -196,8 +197,46 @@ DEMO_REPLIES: dict[str, Reply] = {
 }
 
 
+#: Plausible replies for commands documented in the Rev G manual but not seen on
+#: the hardware this library was developed against. Kept separate from
+#: DEMO_REPLIES so it stays clear which values came off a real drive: these are
+#: shaped from the manual's own examples, not captured.
+DOC_REPLIES: dict[str, Reply] = {
+    "ERROR": "NO ERRORS",
+    "STATUS": [
+        "GENERAL:", " OS Revision: Aries Revision 3.30", " Power Level: 400W",
+        " Control Power: INACTIVE", "MOTOR:", " Motor Name: R200D",
+        " Motor Type: ROTARY", " Feedback Type: SMART ENCODER",
+        " Motor Temp: 25C", "DRIVE", " Drive: DISABLED",
+        " PWM Frequency: 32 kHz", " Feedback Resolution: 944000",
+        " Drive Temperature: 30C", " Bus Voltage: 163V",
+    ],
+    "TERRLG": [
+        "Operating hours: 105.25", "Power on Time: 5hrs 10 min 45.35 s",
+        "Drive Temp: 30C", "Motor Temp: 25C", "Bus voltage: 163V",
+        "Command Voltage: 0.93V", "[Power Cycle]",
+    ],
+    "CONFIG": "NO ERRORS",
+    "CERRLG": None,   # an action: echoes, then silence
+    "SFB": "5",
+    "ANICDB": "0.040",
+    "DCMDZ": "0.000",
+    "TCI": "0.000",
+    "TTRQA": "0.000",
+    "TVER": "0.000",
+    "THALL": "5",
+    "TDHRS": "105",
+    "DMVLIM": "100.0",
+    "DMTSCL": "1.000",
+    "DMVSCL": "100.0",
+}
+
+#: Everything the fake knows: hardware captures plus manual-derived examples.
+ALL_REPLIES: dict[str, Reply] = {**DEMO_REPLIES, **DOC_REPLIES}
+
+
 def demo_drive(**kwargs):
     """An :class:`~parker_ar04ae.drive.AriesDrive` wired to a connected fake."""
     from .drive import AriesDrive
 
-    return AriesDrive(byte_port=FakePort(DEMO_REPLIES), **kwargs).connect()
+    return AriesDrive(byte_port=FakePort(ALL_REPLIES), **kwargs).connect()

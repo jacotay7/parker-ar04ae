@@ -12,12 +12,12 @@ from parker_ar04ae.errors import (
     TimeoutError_,
     VerificationError,
 )
-from parker_ar04ae.testing import DEMO_REPLIES, FakePort, demo_drive
+from parker_ar04ae.testing import ALL_REPLIES, DEMO_REPLIES, FakePort, demo_drive
 
 
 @pytest.fixture
 def port():
-    return FakePort(DEMO_REPLIES)
+    return FakePort(ALL_REPLIES)
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ def test_requires_a_port_or_transport():
 
 def test_commands_before_connect_raise():
     with pytest.raises(ConnectionError_):
-        AriesDrive(byte_port=FakePort(DEMO_REPLIES)).revision()
+        AriesDrive(byte_port=FakePort(ALL_REPLIES)).revision()
 
 
 def test_context_manager_connects_and_closes(port):
@@ -220,7 +220,7 @@ def test_set_accepts_the_drives_normalised_value(port):
 
 
 def test_set_raises_when_the_write_is_ignored(port):
-    refusing = FakePort(DEMO_REPLIES, refuse={"SGI"})
+    refusing = FakePort(ALL_REPLIES, refuse={"SGI"})
     d = AriesDrive(byte_port=refusing, timeout=0.3).connect()
     with pytest.raises(VerificationError) as exc:
         d.set("gain_i", 0.1)
@@ -228,7 +228,7 @@ def test_set_raises_when_the_write_is_ignored(port):
 
 
 def test_set_can_skip_verification(port):
-    refusing = FakePort(DEMO_REPLIES, refuse={"SGI"})
+    refusing = FakePort(ALL_REPLIES, refuse={"SGI"})
     d = AriesDrive(byte_port=refusing, timeout=0.3).connect()
     d.set("gain_i", 0.1, verify=False)  # no raise
     assert refusing.written[-1] == "SGI0.1"
@@ -253,15 +253,18 @@ def test_enable_verifies_the_drive_came_up(drive, port):
 
 def test_enable_raises_when_the_drive_refuses(port):
     # What the real AR-04AE does: DRIVE1 echoes, and DRIVE still reads 0.
-    refusing = FakePort(DEMO_REPLIES, refuse={"DRIVE"})
+    refusing = FakePort({**ALL_REPLIES, "ERROR": "E46-Hardware Enable"},
+                        refuse={"DRIVE"})
     d = AriesDrive(byte_port=refusing, timeout=0.3).connect()
     with pytest.raises(VerificationError) as exc:
         d.enable()
+    # The reason comes from the drive's own ERROR report, not a guess.
+    assert "E46" in str(exc.value)
     assert "hardware enable input" in str(exc.value)
 
 
 def test_enable_can_skip_verification(port):
-    refusing = FakePort(DEMO_REPLIES, refuse={"DRIVE"})
+    refusing = FakePort(ALL_REPLIES, refuse={"DRIVE"})
     d = AriesDrive(byte_port=refusing, timeout=0.3).connect()
     assert d.enable(verify=False) is True
 
@@ -281,3 +284,105 @@ def test_reset_raises_if_the_drive_never_reboots(drive):
     with pytest.raises(VerificationError) as exc:
         drive.reset(timeout=0.4)
     assert "never stopped answering" in str(exc.value)
+
+
+# -- text reports and decoding ---------------------------------------------
+def test_active_errors_is_empty_when_the_drive_says_no_errors(drive):
+    assert drive.active_errors() == []
+
+
+def test_active_errors_decodes_codes(port):
+    port.replies["ERROR"] = ["E46-Hardware Enable", "E39-Drive Disabled"]
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    codes = dict(d.active_errors())
+    assert set(codes) == {"E46", "E39"}
+    assert "hardware enable" in codes["E46"].lower()
+
+
+def test_active_errors_keeps_an_unrecognised_code(port):
+    port.replies["ERROR"] = ["E99-Something New"]
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    assert d.active_errors() == [("E99", "Something New")]
+
+
+def test_status_report_uses_STATUS_not_TSTAT(drive, port):
+    lines = drive.status()
+    assert any("OS Revision" in ln for ln in lines)
+    assert port.written[-1] == "STATUS"
+
+
+def test_error_log_reads_terrlg(drive, port):
+    assert any("Operating hours" in ln for ln in drive.error_log())
+    assert port.written[-1] == "TERRLG"
+
+
+def test_clear_error_log(drive, port):
+    drive.clear_error_log()
+    assert port.written[-1] == "CERRLG"
+
+
+def test_drive_mode_is_decoded(drive):
+    assert drive.drive_mode() == 4
+    assert drive.drive_mode_name() == "Velocity Control"
+
+
+def test_feedback_type_is_decoded(drive):
+    assert "smart encoder" in drive.feedback_type()
+
+
+# -- analog command input --------------------------------------------------
+def test_zero_command_offset_bare(drive, port):
+    drive.zero_command_offset()
+    assert port.written[-1] == "DCMDZ"
+
+
+def test_zero_command_offset_uses_equals_syntax(drive, port):
+    drive.zero_command_offset(0.5)
+    assert port.written[-1] == "DCMDZ=0.5"
+
+
+def test_will_move_on_enable_is_true_for_a_standing_command(drive):
+    # DMODE4, TANI 0.940 V, zero 0.000 V, deadband 0.040 V.
+    will_move, why = drive.will_move_on_enable()
+    assert will_move is True
+    assert "0.940" in why and "will move on enable" in why
+
+
+def test_will_move_on_enable_is_false_inside_the_deadband(port):
+    port.replies["TANI"] = "0.020"
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    will_move, why = d.will_move_on_enable()
+    assert will_move is False
+    assert "deadband" in why
+
+
+def test_will_move_on_enable_accounts_for_the_zero_point(port):
+    port.replies["DCMDZ"] = "0.930"  # zeroed against the standing command
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    assert d.will_move_on_enable()[0] is False
+
+
+def test_will_move_on_enable_is_false_in_step_and_direction_mode(port):
+    port.replies["DMODE"] = "6"
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    will_move, why = d.will_move_on_enable()
+    assert will_move is False
+    assert "does not follow the analog input" in why
+
+
+def test_will_move_on_enable_falls_back_when_commands_are_missing(port):
+    del port.replies["ANICDB"]
+    del port.replies["DCMDZ"]
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    assert d.will_move_on_enable()[0] is True  # 0.940 V still outside default 0.04
+
+
+# -- command line limit ----------------------------------------------------
+def test_overlong_command_is_rejected(drive):
+    with pytest.raises(ValueError) as exc:
+        drive.raw("D" * 40)
+    assert "32" in str(exc.value)
+
+
+def test_command_at_the_limit_is_allowed(drive):
+    drive.raw("D" * 32, strict=False)  # no raise
