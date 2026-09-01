@@ -35,3 +35,7 @@ EOL = "\r"
 
 #: Factory default line settings.
 DEFAULT_BAUD = 9600
+
+#: Seconds of silence that mark the end of a write's echo, since writes send no
+#: ENQ to stop on.
+WRITE_QUIET = 0.08

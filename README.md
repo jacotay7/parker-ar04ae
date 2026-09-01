@@ -174,8 +174,42 @@ Captured from the drive, and the reason the framing looks the way it does:
 - Software flow control must stay **off**, or pyserial would consume the DC1/ENQ
   markers as XON/XOFF.
 
-Sending a command bare reads it (`SGP` → `2.000`); appending a value writes it
-(`SGP2.5`).
+### Queries answer; writes do not
+
+Sending a command bare reads it; appending a value writes it. The two behave
+differently on the wire, which is the single most important thing to know here:
+
+| | echoes | ENQ | reply |
+| --- | --- | --- | --- |
+| `SGI` (query) | ✅ | ✅ 0.02 s | `0.000` |
+| `SGI0.1` (write) | ✅ | ❌ never | nothing |
+
+**A write is never acknowledged.** It echoes and goes silent — no value, no ENQ, no
+error even when the drive ignores it entirely. Two consequences the library handles
+for you:
+
+- Waiting for an ENQ after a write blocks for the full timeout. `raw()` treats a bare
+  command as a query and one with arguments as a write; pass `expect_reply=False`
+  explicitly for writes that carry the value in the name, like `DRIVE1`.
+- A refused write is indistinguishable from an accepted one, so **the only way to
+  confirm a write is to read it back**. `set()`, `enable()` and `disable()` do that
+  and raise `VerificationError` if the value did not take.
+
+```python
+drive.set("gain_i", 0.1)      # writes SGI0.1, reads SGI back, returns '0.100'
+drive.set("gain_i", 0.1, verify=False)   # fire and forget
+```
+
+Parameters are stored by the drive itself and **survive a reboot** — verified by
+writing `ERRLVL3`, resetting, confirming the link actually dropped, and reading `3`
+back. There is no save command to call.
+
+```python
+drive.reset()      # returns ~2.3 - seconds until the drive answered again
+```
+
+`reset()` waits for the link to both drop *and* recover, so you cannot read stale
+values off a drive that has not finished rebooting.
 
 ## Verified command set
 
@@ -215,7 +249,7 @@ assert port.written == ["TREV"]        # what actually went on the wire
 `DEMO_REPLIES` holds values captured from the real drive.
 
 ```bash
-python -m pytest                          # 71 tests, no hardware needed
+python -m pytest                          # 85 tests, no hardware needed
 python examples/basic_test.py --demo      # the bring-up script against the fake
 python examples/basic_test.py /dev/cu.PL2303G-USBtoUART10
 ```
@@ -231,17 +265,50 @@ python examples/basic_test.py /dev/cu.PL2303G-USBtoUART10
 | [testing.py](parker_ar04ae/testing.py) | `FakePort`, `DEMO_REPLIES`, `demo_drive()` |
 | [cli.py](parker_ar04ae/cli.py) | `ports` / `probe` / `info` / `term` / `monitor` |
 
-## Caveats
+## Verified on hardware
 
-- **Only reads have been exercised.** Every query above was run against the drive.
-  Writes (`set()`, `enable()`, `disable()`, `reset()`) are implemented from the same
-  documented syntax but were not run. Verify with `get()` after writing.
-- **Persistence is unconfirmed.** No save-to-NVRAM command is wrapped, because the
-  mechanism was not established. Check whether a changed parameter survives a power
-  cycle before relying on it.
+Everything below was exercised against the drive, not inferred:
+
+- **Reads** — all 40 commands in `PARAMETERS`.
+- **Writes** — `ERRLVL` and `SGI` written, read back, and restored. Writes take
+  effect and are unacknowledged; the library reads back to confirm.
+- **Persistence** — a written value survived a confirmed reboot. No save command.
+- **`reset()`** — the drive is unreachable for roughly 2 s; the echo is cut off
+  mid-word as it goes down.
+- **`enable()` / `disable()`** — exercised with the motor connected and free.
+
+### This drive will not enable
+
+`DRIVE1` is accepted silently but `DRIVE` still reads `0`, with `TAS` clear and the
+bus at ~163 V. `enable()` turns that silent failure into a `VerificationError`:
+
+```
+VerificationError: 'DRIVE1' did not take effect: expected True, read back False.
+the drive refused to enable. Check the hardware enable input (TIN), the axis
+status bits (TAS) and the bus voltage (TVBUS)
+```
+
+`TIN` reads `0000_0000_0000_0000` — no digital input asserted — so the most likely
+cause is an unasserted hardware enable input on the drive's I/O connector. Check the
+manual's enable-input wiring for your unit.
+
+### Before you do get it enabling
+
+`TANI` reads a steady **~0.93 V** with the drive idle and disabled — five consecutive
+samples within 0.001 V, so it is a real standing command, not noise. This unit reports
+`DMODE 4`. If that is an analog velocity or torque mode, the motor will act on that
+0.93 V the instant it is energised, with no `GO` needed. Confirm what `DMODE 4` is and
+zero or disconnect the ±10 V command input before the first successful enable.
+
+`enable()` energises the motor and it will hold position. Nothing here is a safety
+function or a substitute for the hardware enable or an E-stop circuit.
+
+## Still unconfirmed
+
 - **No motion commands are wrapped.** The AR-04AE is the drive-only ARIES variant: it
-  follows step/direction or ±10 V analog command from an external controller, and
-  RS-232 is for configuration and diagnostics. This unit reports `DMODE 4`.
-- `enable()` energises the motor and it will hold position — make sure the axis is
-  clear first. Nothing here is a safety function or a substitute for the hardware
-  enable or an E-stop circuit.
+  follows step/direction or ±10 V analog command from an external controller. Nothing
+  was commanded to move, since the drive would not enable.
+- **`DMODE 4` semantics.** Read from the drive, but its meaning is not established.
+- **Write coverage.** Two parameters were written and restored. The mechanism is the
+  same for all of them, but not every parameter was individually exercised, and some
+  may be rejected while the drive is enabled.

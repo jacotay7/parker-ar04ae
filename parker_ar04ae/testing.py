@@ -13,12 +13,17 @@ lead marker, reply lines, then the ENQ end-of-response prompt.
 
 from __future__ import annotations
 
+import re
 from typing import Callable, Mapping, Union
 
 from .protocol import DC1, ENQ
 from .transport import BytePort
 
-Reply = Union[str, list, Callable[[str], str]]
+Reply = Union[str, list, Callable[[str], str], None]
+
+#: A write carries a numeric value, e.g. ``SGI0.1`` or ``DRIVE1``. Requiring
+#: that keeps ``TASX`` from being read as a write of ``X`` to ``TAS``.
+_NUMERIC = re.compile(r"^[-+]?(?:\d+\.?\d*|\.\d+)$")
 
 
 class FakePort(BytePort):
@@ -28,13 +33,22 @@ class FakePort(BytePort):
     ----------
     replies:
         Maps an upper-cased command to the text sent back. The value may be a
-        string, a list of lines, or a callable taking the command. A command
-        with no entry gets ``default``.
+        string, a list of lines, a callable taking the command, or ``None`` to
+        echo with no value and no ENQ, as a write does. A command with no entry
+        gets ``default``.
     echo:
         Echo the received command back first, as the drive does with ``ECHO1``.
     enq:
-        Terminate each reply with the ENQ prompt, as the drive does. Set
-        ``False`` to model a unit that never sends one.
+        Terminate each *query* reply with the ENQ prompt, as the drive does.
+        Set ``False`` to model a unit that never sends one.
+    emulate_writes:
+        Model the drive's write behaviour: ``SGI0.1`` stores ``0.1`` against
+        ``SGI`` and replies with the echo only - no value and no ENQ, exactly
+        as the hardware does.
+    refuse:
+        Commands whose writes are silently ignored, the way the real drive
+        ignores ``DRIVE1`` when it will not enable. The echo still comes back,
+        so the refusal is invisible until the value is read again.
     default:
         Reply for an unknown command. Pass ``""`` to model a dead link, where
         nothing comes back at all.
@@ -47,12 +61,16 @@ class FakePort(BytePort):
         eol: str = "\r\n",
         enq: bool = True,
         default: Reply = "ERROR: Unknown Command",
+        emulate_writes: bool = True,
+        refuse: set[str] | None = None,
     ):
         self.replies = dict(replies or {})
         self.echo = echo
         self.eol = eol
         self.enq = enq
         self.default = default
+        self.emulate_writes = emulate_writes
+        self.refuse = {c.upper() for c in (refuse or set())}
         self.written: list[str] = []
         self._rx = bytearray()
         self._tx_partial = ""
@@ -89,15 +107,35 @@ class FakePort(BytePort):
         self._rx.clear()
 
     # -- behaviour ---------------------------------------------------------
+    def _split_write(self, command: str) -> tuple[str, str] | None:
+        """Split ``SGI0.1`` into ``("SGI", "0.1")`` using the longest known
+        command that prefixes it. Returns None if this is not a write."""
+        upper = command.upper()
+        for i in range(len(upper) - 1, 0, -1):
+            if upper[:i] in self.replies and _NUMERIC.match(command[i:]):
+                return upper[:i], command[i:]
+        return None
+
     def _handle(self, command: str) -> None:
         if not command:
             return
         self.written.append(command)
         if self.echo:
             self._emit(command)
+
+        if self.emulate_writes and command.upper() not in self.replies:
+            write = self._split_write(command)
+            if write is not None:
+                name, value = write
+                if name not in self.refuse:
+                    self.replies[name] = value
+                return  # a write echoes and says nothing more - no ENQ
+
         reply = self.replies.get(command.upper(), self.default)
         if callable(reply):
             reply = reply(command)
+        if reply is None:
+            return  # echo only, no value and no ENQ - what a write looks like
         for line in [reply] if isinstance(reply, str) else reply:
             self._emit(line)
         if self.enq:

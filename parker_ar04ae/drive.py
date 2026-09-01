@@ -18,9 +18,15 @@ Every command wrapped here was verified against an AR-04AE running Aries OS
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional, Union
 
-from .errors import CommandError, ConnectionError_, TimeoutError_
+from .errors import (
+    CommandError,
+    ConnectionError_,
+    TimeoutError_,
+    VerificationError,
+)
 from .protocol import DEFAULT_BAUD, ERROR_PREFIX
 from .response import Response
 from .transport import BytePort, SerialPort, SerialTransport
@@ -31,6 +37,16 @@ Number = Union[int, float]
 
 #: Baud rates to sweep when probing. 9600 is the factory default.
 BAUD_RATES = (9600, 19200, 38400, 57600, 115200)
+
+#: Per-poll timeout while waiting for a reset to complete. Short, because the
+#: drive is expected to be unreachable for part of it.
+RESET_POLL = 0.35
+
+#: Settle time after a reset before flushing. The poll that detects recovery can
+#: return a partial reply, leaving the rest of it in flight; flushing before
+#: that lands leaves the stream misaligned, and the next read picks up the tail
+#: of the old one.
+RESET_SETTLE = 0.5
 
 #: Readable parameters, grouped as the manual groups them:
 #: ``name -> (command, description)``. Sending the bare command reads the
@@ -178,17 +194,25 @@ class AriesDrive:
         *args: object,
         timeout: Optional[float] = None,
         strict: Optional[bool] = None,
+        expect_reply: Optional[bool] = None,
     ) -> Response:
         """Send ``command`` verbatim and return the parsed :class:`Response`.
 
         Arguments are concatenated directly onto the command, which is the
         drive's own syntax: ``raw("SGP", 2.0)`` sends ``SGP2.0``. Sending a
         command bare reads the current value.
+
+        ``expect_reply`` defaults to "a bare command is a query, one with
+        arguments is a write". Writes send no ENQ, so waiting for one would
+        block for the full timeout. Pass it explicitly for writes that carry
+        their value in the command name, such as ``DRIVE1``.
         """
         if not self.is_connected:
             raise ConnectionError_("drive is not connected; call connect() first")
+        if expect_reply is None:
+            expect_reply = not args
         text = self._format(command, args)
-        lines = self.transport.exchange(text, timeout=timeout)
+        lines = self.transport.exchange(text, timeout=timeout, expect_reply=expect_reply)
         resp = Response(command=text, lines=lines, error_prefix=self.error_prefix)
         strict = self.strict if strict is None else strict
         if strict and resp.is_error:
@@ -214,14 +238,41 @@ class AriesDrive:
         """Read a parameter by its friendly name from :data:`PARAMETERS`."""
         return self.query(self._command_for(name), **kw)
 
-    def set(self, name: str, value: object, **kw) -> Response:
-        """Write a parameter by its friendly name.
+    def set(self, name: str, value: object, verify: bool = True, **kw) -> Response:
+        """Write a parameter by its friendly name, then read it back.
 
-        Writes were not exercised during bring-up - only reads were. Check the
-        value with :meth:`get` afterwards, and see the README on persistence
-        before assuming a change survives a power cycle.
+        The drive does not acknowledge writes, so a refused write is
+        indistinguishable from an accepted one on the wire. With ``verify``
+        (the default) the value is read back and compared, raising
+        :class:`VerificationError` if it did not take. Returns the read-back
+        response, so the caller sees the drive's own normalised value
+        (``0.1`` comes back as ``0.100``).
+
+        See the README on persistence before assuming a change survives a
+        power cycle.
         """
-        return self.raw(self._command_for(name), value, **kw)
+        command = self._command_for(name)
+        written = self.raw(command, value, **kw)
+        if not verify:
+            return written
+        readback = self.raw(command, **kw)
+        if not self._values_match(value, readback.value):
+            raise VerificationError(
+                f"{command}{value}", value, readback.value or "(no reply)"
+            )
+        return readback
+
+    @staticmethod
+    def _values_match(wanted: object, actual: str) -> bool:
+        """Compare numerically when both sides parse, else case-insensitively.
+
+        The drive normalises what it stores - ``SGI0.1`` reads back as
+        ``0.100`` - so a plain string comparison would report a false failure.
+        """
+        try:
+            return float(str(wanted)) == float(actual)
+        except (TypeError, ValueError):
+            return str(wanted).strip().upper() == actual.strip().upper()
 
     @staticmethod
     def _command_for(name: str) -> str:
@@ -321,25 +372,74 @@ class AriesDrive:
         return self.query("TMTEMP").as_float()
 
     # -- enable ------------------------------------------------------------
-    def enable(self) -> Response:
-        """Energise the motor (``DRIVE1``).
+    def enable(self, verify: bool = True) -> bool:
+        """Energise the motor (``DRIVE1``). Returns the resulting enable state.
 
-        The motor holds position after this; make sure the axis is clear. Not
-        exercised during bring-up.
+        The motor holds position after this, and in an analog command mode it
+        will act on whatever is on the command input the instant it is
+        energised - make sure the axis is clear and check :meth:`analog_input`
+        first.
+
+        ``DRIVE1`` is unacknowledged, so a refused enable is silent on the
+        wire. With ``verify`` the state is read back and
+        :class:`VerificationError` raised if the drive did not come up.
         """
-        return self.raw("DRIVE1")
+        self.raw("DRIVE1", expect_reply=False)
+        if not verify:
+            return True
+        state = self.is_enabled()
+        if not state:
+            raise VerificationError(
+                "DRIVE1", True, False,
+                "the drive refused to enable. Check the hardware enable input "
+                "(TIN), the axis status bits (TAS) and the bus voltage (TVBUS)",
+            )
+        return state
 
-    def disable(self) -> Response:
+    def disable(self, verify: bool = True) -> bool:
         """De-energise the motor (``DRIVE0``). The load is free to move."""
-        return self.raw("DRIVE0")
+        self.raw("DRIVE0", expect_reply=False)
+        if not verify:
+            return False
+        state = self.is_enabled()
+        if state:
+            raise VerificationError("DRIVE0", False, True, "the drive stayed enabled")
+        return state
 
-    def reset(self) -> None:
-        """Reset the drive (``RESET``).
+    def reset(self, wait: bool = True, timeout: float = 20.0) -> Optional[float]:
+        """Reboot the drive (``RESET``), returning seconds until it answered.
 
-        Equivalent to a power cycle: the drive drops off the serial link for
-        several seconds, so no response is read. Not exercised during bring-up.
+        The reboot cuts the echo off mid-word and the drive is unreachable for
+        roughly two seconds. With ``wait`` this polls until the link has both
+        dropped *and* recovered, so a caller cannot read stale values from a
+        drive that has not actually come back yet. Returns ``None`` when
+        ``wait`` is False.
+
+        Parameters survive the reboot - the drive stores them itself, with no
+        save command needed.
         """
         self.transport.write_line(self._format("RESET", ()))
+        if not wait:
+            return None
+
+        t0 = time.monotonic()
+        went_down = False
+        while time.monotonic() - t0 < timeout:
+            alive = not self.raw("TREV", strict=False, timeout=RESET_POLL).empty
+            if not alive:
+                went_down = True
+            elif went_down:
+                elapsed = time.monotonic() - t0
+                time.sleep(RESET_SETTLE)
+                self.transport.flush_input()
+                return elapsed
+            time.sleep(0.05)
+
+        if not went_down:
+            raise VerificationError(
+                "RESET", "a reboot", "the drive never stopped answering"
+            )
+        raise TimeoutError_("RESET", timeout, "drive did not come back")
 
     def __repr__(self) -> str:
         state = "connected" if self.is_connected else "closed"

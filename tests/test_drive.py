@@ -7,7 +7,11 @@ import pytest
 
 from parker_ar04ae import AriesDrive, CommandError
 from parker_ar04ae.drive import PARAMETER_COMMANDS, PARAMETERS
-from parker_ar04ae.errors import ConnectionError_, TimeoutError_
+from parker_ar04ae.errors import (
+    ConnectionError_,
+    TimeoutError_,
+    VerificationError,
+)
 from parker_ar04ae.testing import DEMO_REPLIES, FakePort, demo_drive
 
 
@@ -145,30 +149,10 @@ def test_output_states_bits(drive):
 
 
 # -- commands --------------------------------------------------------------
-def test_enable_and_disable_send_the_right_commands(drive, port):
-    port.replies["DRIVE1"] = ""
-    port.replies["DRIVE0"] = ""
-    drive.enable()
-    assert port.written[-1] == "DRIVE1"
-    drive.disable()
-    assert port.written[-1] == "DRIVE0"
-
-
-def test_reset_does_not_wait_for_a_reply(drive, port):
-    drive.reset()
-    assert port.written[-1] == "RESET"
-
-
 # -- parameter registry ----------------------------------------------------
 def test_get_reads_by_friendly_name(drive):
     assert drive.get("bus_voltage").as_float() == pytest.approx(163.1)
     assert drive.get("gain_p").value == "2.000"
-
-
-def test_set_writes_by_friendly_name(drive, port):
-    port.replies["SGP3.5"] = ""
-    drive.set("gain_p", 3.5)
-    assert port.written[-1] == "SGP3.5"
 
 
 def test_unknown_parameter_name_raises_with_a_hint(drive):
@@ -207,3 +191,93 @@ def test_demo_drive_helper_is_connected():
     d = demo_drive()
     assert d.is_connected
     assert d.revision().startswith("Aries OS")
+
+
+# -- writes ----------------------------------------------------------------
+def test_bare_command_expects_a_reply_and_an_argument_does_not(drive, port):
+    # A write that waited for ENQ would block for the whole timeout.
+    import time
+
+    drive.transport.timeout = 5.0
+    start = time.monotonic()
+    drive.raw("SGI", 0.1)
+    assert time.monotonic() - start < 1.0
+
+
+def test_set_reads_the_value_back(drive, port):
+    assert drive.set("gain_i", 0.1).value == "0.1"
+    assert port.written[-2:] == ["SGI0.1", "SGI"]
+
+
+def test_set_accepts_the_drives_normalised_value(port):
+    # The drive stores 0.1 as '0.100'; comparison must be numeric, not textual.
+    port.replies["SGI"] = "0.000"
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    port.emulate_writes = False
+    port.replies["SGI0.1"] = None
+    port.replies["SGI"] = "0.100"
+    assert d.set("gain_i", 0.1).value == "0.100"
+
+
+def test_set_raises_when_the_write_is_ignored(port):
+    refusing = FakePort(DEMO_REPLIES, refuse={"SGI"})
+    d = AriesDrive(byte_port=refusing, timeout=0.3).connect()
+    with pytest.raises(VerificationError) as exc:
+        d.set("gain_i", 0.1)
+    assert exc.value.expected == 0.1
+
+
+def test_set_can_skip_verification(port):
+    refusing = FakePort(DEMO_REPLIES, refuse={"SGI"})
+    d = AriesDrive(byte_port=refusing, timeout=0.3).connect()
+    d.set("gain_i", 0.1, verify=False)  # no raise
+    assert refusing.written[-1] == "SGI0.1"
+
+
+def test_values_match_compares_numerically():
+    assert AriesDrive._values_match(0.1, "0.100")
+    assert AriesDrive._values_match("2", "2.000")
+    assert not AriesDrive._values_match(0.1, "0.200")
+
+
+def test_values_match_falls_back_to_text():
+    assert AriesDrive._values_match("BE231FJ", "be231fj")
+    assert not AriesDrive._values_match("BE231FJ", "R200D")
+
+
+# -- enable / disable ------------------------------------------------------
+def test_enable_verifies_the_drive_came_up(drive, port):
+    assert drive.enable() is True
+    assert port.written[-2] == "DRIVE1"
+
+
+def test_enable_raises_when_the_drive_refuses(port):
+    # What the real AR-04AE does: DRIVE1 echoes, and DRIVE still reads 0.
+    refusing = FakePort(DEMO_REPLIES, refuse={"DRIVE"})
+    d = AriesDrive(byte_port=refusing, timeout=0.3).connect()
+    with pytest.raises(VerificationError) as exc:
+        d.enable()
+    assert "hardware enable input" in str(exc.value)
+
+
+def test_enable_can_skip_verification(port):
+    refusing = FakePort(DEMO_REPLIES, refuse={"DRIVE"})
+    d = AriesDrive(byte_port=refusing, timeout=0.3).connect()
+    assert d.enable(verify=False) is True
+
+
+def test_disable_verifies(drive, port):
+    drive.enable()
+    assert drive.disable() is False
+    assert port.written[-2] == "DRIVE0"
+
+
+def test_reset_without_waiting_just_sends_it(drive, port):
+    assert drive.reset(wait=False) is None
+    assert port.written[-1] == "RESET"
+
+
+def test_reset_raises_if_the_drive_never_reboots(drive):
+    with pytest.raises(VerificationError) as exc:
+        drive.reset(timeout=0.4)
+    assert "never stopped answering" in str(exc.value)

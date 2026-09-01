@@ -107,3 +107,31 @@ def test_transport_is_a_context_manager():
     with SerialTransport(port) as t:
         assert t.is_open
     assert not port.is_open
+
+
+# -- writes: echo only, no ENQ ---------------------------------------------
+def test_write_does_not_wait_for_an_enq_it_will_never_get():
+    import time
+
+    port, t = make({"SGI": "0.000"})
+    t.timeout = 5.0
+    start = time.monotonic()
+    t.exchange("SGI0.1", expect_reply=False)
+    assert time.monotonic() - start < 1.0
+
+
+def test_write_reply_is_empty_after_the_echo_is_stripped():
+    _, t = make({"SGI": "0.000"})
+    assert t.exchange("SGI0.1", expect_reply=False) == []
+
+
+def test_write_echo_does_not_leak_into_the_next_read():
+    _, t = make({"SGI": "0.000"})
+    t.exchange("SGI0.25", expect_reply=False)
+    assert t.exchange("SGI") == ["0.25"]
+
+
+def test_read_quiet_returns_what_arrived():
+    port, t = make({"SGI": "0.000"})
+    t.write_line("SGI0.1")
+    assert "SGI0.1" in t.read_quiet(max_wait=0.5)

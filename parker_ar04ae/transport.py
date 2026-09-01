@@ -23,7 +23,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from .errors import ConnectionError_
-from .protocol import DC1, ENQ, EOL
+from .protocol import DC1, ENQ, EOL, WRITE_QUIET
 
 log = logging.getLogger(__name__)
 
@@ -201,6 +201,31 @@ class SerialTransport:
         log.debug("TX %r", data)
         self.port.write(data)
 
+    def read_quiet(
+        self, quiet: float = WRITE_QUIET, max_wait: Optional[float] = None
+    ) -> str:
+        """Read until the line has been silent for ``quiet`` seconds.
+
+        Used after a write, which echoes the command and then sends nothing -
+        no value and no ENQ - so there is no marker to stop on. Draining the
+        echo here keeps it out of the head of the next reply.
+        """
+        max_wait = self.timeout if max_wait is None else max_wait
+        buf = bytearray()
+        deadline = time.monotonic() + max_wait
+        last_rx = None
+        while time.monotonic() < deadline:
+            if self.port.in_waiting:
+                buf += self.port.read(self.port.in_waiting)
+                last_rx = time.monotonic()
+            elif last_rx is not None and time.monotonic() - last_rx >= quiet:
+                break
+            time.sleep(POLL_INTERVAL)
+        text = buf.decode(self.encoding, errors="replace")
+        if text:
+            log.debug("RX %r", text)
+        return text
+
     def read_raw(self, timeout: Optional[float] = None) -> str:
         """Read one reply, stopping at the drive's ENQ prompt.
 
@@ -260,10 +285,24 @@ class SerialTransport:
             return lines[1:]
         return lines
 
-    def exchange(self, command: str, timeout: Optional[float] = None) -> list[str]:
-        """Send ``command`` and return the reply lines, echo and markers removed."""
+    def exchange(
+        self,
+        command: str,
+        timeout: Optional[float] = None,
+        expect_reply: bool = True,
+    ) -> list[str]:
+        """Send ``command`` and return the reply lines, echo and markers removed.
+
+        With ``expect_reply=False`` the read stops at a short silence instead of
+        waiting for an ENQ that a write will never send. Without this a write
+        blocks for the whole timeout.
+        """
         self.write_line(command)
-        raw = self.read_raw(timeout=timeout)
+        raw = (
+            self.read_raw(timeout=timeout)
+            if expect_reply
+            else self.read_quiet(max_wait=timeout)
+        )
         return self.strip_echo(command, self.split_lines(raw))
 
     def __repr__(self) -> str:
