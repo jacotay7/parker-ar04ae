@@ -1,0 +1,194 @@
+"""Command-line tools for bringing up and poking at an ARIES drive.
+
+    python -m parker_ar04ae ports
+    python -m parker_ar04ae probe
+    python -m parker_ar04ae info    -p /dev/cu.usbserial-1420
+    python -m parker_ar04ae term    -p /dev/cu.usbserial-1420
+    python -m parker_ar04ae monitor -p /dev/cu.usbserial-1420
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+
+from .drive import BAUD_RATES, AriesDrive
+from .errors import AriesError
+
+
+def list_ports() -> list:
+    try:
+        from serial.tools import list_ports as lp
+    except ImportError:
+        print("pyserial is not installed; run: pip install pyserial", file=sys.stderr)
+        return []
+    return list(lp.comports())
+
+
+def cmd_ports(args) -> int:
+    ports = list_ports()
+    if not ports:
+        print("No serial ports found.")
+        print("Plug the RS-232 adapter in and check that its driver is loaded.")
+        return 1
+    for p in ports:
+        print(f"{p.device:28} {p.description}")
+    likely = [p.device for p in ports if "usb" in p.device.lower() and "cu." in p.device]
+    if likely:
+        print(f"\nLikely adapter: {likely[0]}")
+    return 0
+
+
+def _candidate_ports(explicit: str | None) -> list[str]:
+    if explicit:
+        return [explicit]
+    return [
+        p.device
+        for p in list_ports()
+        if "cu." in p.device and "Bluetooth" not in p.device
+    ]
+
+
+def cmd_probe(args) -> int:
+    """Try each candidate port and baud rate until the drive answers TREV."""
+    ports = _candidate_ports(args.port)
+    if not ports:
+        print("No candidate ports. Run `ports` first.")
+        return 1
+    bauds = [args.baud] if args.baud else list(BAUD_RATES)
+
+    for port in ports:
+        for baud in bauds:
+            print(f"trying {port} @ {baud:>6} ... ", end="", flush=True)
+            try:
+                drive = AriesDrive(port, baudrate=baud, timeout=args.timeout)
+                with drive:
+                    resp = drive.raw("TREV", strict=False)
+            except AriesError as exc:
+                print(f"skip ({exc})")
+                continue
+            if resp.empty:
+                print("no response")
+                continue
+            print("OK")
+            print(f"\nDrive answered on {port} at {baud} baud:")
+            for line in resp.lines:
+                print(f"  {line}")
+            print(f"\n  AriesDrive({port!r}, baudrate={baud})")
+            return 0
+
+    print("\nNothing answered. Things to check:")
+    print("  - the drive is powered up")
+    print("  - a null-modem vs straight-through RS-232 cable (try the other)")
+    print("  - the drive's own baud rate setting")
+    print("  - you are using the /dev/cu.* node, not /dev/tty.*")
+    return 1
+
+
+def cmd_info(args) -> int:
+    """Dump identity, status and feedback in one pass."""
+    with AriesDrive(args.port, baudrate=args.baud or 9600, timeout=args.timeout) as d:
+        print(f"revision      {d.raw('TREV', strict=False).value}")
+        for label, cmd in [
+            ("motor", "DMTR"),
+            ("drive mode", "DMODE"),
+            ("enc. res.", "ERES"),
+            ("enabled", "DRIVE"),
+            ("axis status", "TAS"),
+            ("ext. status", "TASX"),
+            ("errors", "TER"),
+            ("position", "TPE"),
+            ("velocity", "TVEL"),
+            ("current", "TCMD"),
+            ("temperature", "TDTEMP"),
+        ]:
+            resp = d.raw(cmd, strict=False)
+            value = resp.value if not resp.empty else "(no response)"
+            print(f"{label:<13} {value}")
+
+        if args.stat:
+            print("\n--- TSTAT ---")
+            for line in d.raw("TSTAT", timeout=3.0, quiet_time=0.4, strict=False).lines:
+                print(line)
+    return 0
+
+
+def cmd_monitor(args) -> int:
+    """Poll position, velocity and current until interrupted."""
+    with AriesDrive(args.port, baudrate=args.baud or 9600, timeout=args.timeout) as d:
+        print("position        velocity        current     (ctrl-C to stop)")
+        try:
+            while True:
+                row = [d.raw(c, strict=False).value or "-" for c in ("TPE", "TVEL", "TCMD")]
+                print(f"\r{row[0]:<15} {row[1]:<15} {row[2]:<12}", end="", flush=True)
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            print()
+    return 0
+
+
+def cmd_term(args) -> int:
+    """Type commands straight at the drive; blank line or ctrl-D to quit."""
+    with AriesDrive(args.port, baudrate=args.baud or 9600, timeout=args.timeout,
+                    strict=False) as d:
+        print(f"Connected to {args.port}. Blank line or ctrl-D to quit.")
+        while True:
+            try:
+                line = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not line:
+                break
+            resp = d.raw(line)
+            if resp.empty:
+                print("  (no response)")
+            for out in resp.lines:
+                print(f"  {out}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="aries", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="log serial traffic")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    def with_port(p, port_required=True):
+        p.add_argument("-p", "--port", required=port_required, help="e.g. /dev/cu.usbserial-1420")
+        p.add_argument("-b", "--baud", type=int, help="default 9600")
+        p.add_argument("-t", "--timeout", type=float, default=1.0)
+        return p
+
+    sub.add_parser("ports", help="list serial ports").set_defaults(func=cmd_ports)
+
+    p = with_port(sub.add_parser("probe", help="find the drive's port and baud rate"), False)
+    p.set_defaults(func=cmd_probe, timeout=0.6)
+
+    p = with_port(sub.add_parser("info", help="dump identity and status"))
+    p.add_argument("--stat", action="store_true", help="also print the full TSTAT page")
+    p.set_defaults(func=cmd_info)
+
+    p = with_port(sub.add_parser("monitor", help="poll position/velocity/current"))
+    p.add_argument("-i", "--interval", type=float, default=0.25)
+    p.set_defaults(func=cmd_monitor)
+
+    with_port(sub.add_parser("term", help="interactive command terminal")).set_defaults(func=cmd_term)
+
+    args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+    try:
+        return args.func(args)
+    except AriesError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
