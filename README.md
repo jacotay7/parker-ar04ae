@@ -24,6 +24,37 @@ waiting for carrier detect, which an adapter without full handshaking never asse
 Defaults are 9600 baud, 8N1, no flow control. If the drive stays silent, the usual
 culprit is a straight-through cable where a null-modem is needed (or vice versa).
 
+### No serial port appears
+
+`ports` listing only `debug-console` and `Bluetooth-Incoming-Port` means the adapter
+has no driver bound to it. Check whether macOS sees the USB device at all:
+
+```bash
+ioreg -p IOUSB -w0 -l | grep -iE '"USB (Product|Vendor) Name"|idVendor|idProduct'
+ioreg -rc IOSerialBSDClient -w0 | grep IOCalloutDevice    # ports that do exist
+```
+
+If the adapter shows up in the first command but not the second, the device is
+enumerating and only the driver is missing.
+
+macOS ships drivers for FTDI and USB CDC-ACM devices only. The common Prolific
+**PL2303** and WCH **CH340/CH341** bridges are vendor-specific USB devices, so
+nothing built in claims them and no `/dev/cu.*` node is created. Prolific's current
+G-series parts (`0x067B`/`0x23A3` = PL2303GC, and siblings `0x23B3`…`0x23F3`) need
+[PL2303 Serial](https://apps.apple.com/us/app/pl2303-serial/id1624835354?mt=12) from
+the Mac App Store — a DriverKit extension. After installing, **open the app once and
+approve the extension** in System Settings → General → Login Items & Extensions →
+Driver Extensions, then replug.
+
+The port then appears under the driver's own name, e.g. `/dev/cu.PL2303G-USBtoUART110`
+— not `/dev/cu.usbserial-*`. `ports` and `probe` recognise the naming used by all the
+common bridge drivers.
+
+Older `0x067B`/`0x2303` chips are a different situation: many are counterfeit PL2303HXA
+or XA parts that Prolific's current driver deliberately refuses to bind to. If you have
+one of those, the practical fix is a different adapter — an FTDI FT232-based one works
+with no driver install at all.
+
 ## Bring-up
 
 ```bash

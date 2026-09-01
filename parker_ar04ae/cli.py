@@ -18,6 +18,18 @@ from .drive import BAUD_RATES, AriesDrive
 from .errors import AriesError
 
 
+#: Ports macOS always provides that are never a USB adapter.
+BUILTIN_PORTS = ("Bluetooth-Incoming-Port", "debug-console")
+
+#: Name fragments used by the common USB-serial bridge drivers. PL2303G parts
+#: appear as ``cu.PL2303G-*``, Silicon Labs as ``cu.SLAB_USBtoUART``, CH34x as
+#: ``cu.wchusbserial*`` - none of which contain "usbserial".
+ADAPTER_HINTS = (
+    "usbserial", "usbmodem", "pl2303", "slab_usbtouart",
+    "wchusbserial", "ftdi", "usb-serial", "prolific",
+)
+
+
 def list_ports() -> list:
     try:
         from serial.tools import list_ports as lp
@@ -27,6 +39,14 @@ def list_ports() -> list:
     return list(lp.comports())
 
 
+def is_builtin(device: str) -> bool:
+    return any(b in device for b in BUILTIN_PORTS)
+
+
+def looks_like_adapter(device: str) -> bool:
+    return any(h in device.lower() for h in ADAPTER_HINTS)
+
+
 def cmd_ports(args) -> int:
     ports = list_ports()
     if not ports:
@@ -34,21 +54,27 @@ def cmd_ports(args) -> int:
         print("Plug the RS-232 adapter in and check that its driver is loaded.")
         return 1
     for p in ports:
-        print(f"{p.device:28} {p.description}")
-    likely = [p.device for p in ports if "usb" in p.device.lower() and "cu." in p.device]
+        tag = "  <- built in" if is_builtin(p.device) else ""
+        print(f"{p.device:32} {p.description}{tag}")
+
+    candidates = [p.device for p in ports if "cu." in p.device and not is_builtin(p.device)]
+    likely = [d for d in candidates if looks_like_adapter(d)] or candidates
     if likely:
         print(f"\nLikely adapter: {likely[0]}")
+    else:
+        print("\nNo USB adapter found - only built-in ports are present.")
+        print("The adapter may be plugged in but have no driver bound to it; see")
+        print("the 'No serial port appears' section of the README.")
+        return 1
     return 0
 
 
 def _candidate_ports(explicit: str | None) -> list[str]:
     if explicit:
         return [explicit]
-    return [
-        p.device
-        for p in list_ports()
-        if "cu." in p.device and "Bluetooth" not in p.device
-    ]
+    ports = [p.device for p in list_ports() if "cu." in p.device and not is_builtin(p.device)]
+    # Try the ones that look like a USB adapter first, but fall back to the rest.
+    return sorted(ports, key=lambda d: not looks_like_adapter(d))
 
 
 def cmd_probe(args) -> int:
@@ -81,6 +107,7 @@ def cmd_probe(args) -> int:
 
     print("\nNothing answered. Things to check:")
     print("  - the drive is powered up")
+    print("  - the adapter has a driver bound (see README: 'No serial port appears')")
     print("  - a null-modem vs straight-through RS-232 cable (try the other)")
     print("  - the drive's own baud rate setting")
     print("  - you are using the /dev/cu.* node, not /dev/tty.*")
