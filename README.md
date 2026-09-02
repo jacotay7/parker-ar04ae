@@ -293,7 +293,7 @@ assert port.written == ["TREV"]        # what actually went on the wire
 `DEMO_REPLIES` holds values captured from the real drive.
 
 ```bash
-python -m pytest                          # 126 tests, no hardware needed
+python -m pytest                          # 135 tests, no hardware needed
 python examples/basic_test.py --demo      # the bring-up script against the fake
 python examples/basic_test.py /dev/cu.PL2303G-USBtoUART10
 ```
@@ -596,24 +596,75 @@ shield grounded at one end, routed away from the motor leads, and a ferrite on t
 adapter lead. Note also that tying the enable and reset returns to `DGND` gives up
 those inputs' optical isolation, which does not help.
 
-### Unexplained: position and velocity do not agree
+### Measuring speed
 
-Over that run `TPE` advanced about 4.9 million counts. At `ERES` 944000 counts/rev that
-is ~5.2 revolutions, which over roughly nine seconds implies ~0.58 rev/s — far above
-the 0.072–0.087 rev/s `TVELA` reported at the same moments. The link was corrupting
-and the sampling interval was irregular, so neither figure is trustworthy from that
-run. Worth re-measuring over a clean link before drawing any conclusion about units or
-scaling.
+`TVELA` is unreliable at low speed — running at ~1 RPM its standard deviation was
+over a third of its mean. Integrating `TPE` and fitting a line is far better:
+
+```python
+m = drive.measure_velocity(duration=30)
+print(m)        # 1.0086 RPM (0.01681 rev/s), R^2 0.99903 from 53 samples over 32.0s
+```
+
+It discards corrupted replies and any sample that goes backwards, since one
+undetected character corruption in a position reading would otherwise dominate the
+fit. `r_squared` is the quality check — a steady speed gives >0.999.
+
+The earlier apparent disagreement between `TPE` and `TVELA` was measurement noise:
+with a proper fit the two agree to about 10%, well inside `TVELA`'s own scatter.
+
+## Running the motor at a chosen speed
+
+There is **no serial motion command** on the AR-04AE. In `DMODE4` the velocity comes
+entirely from the analog input, per the `ANICDB` entry:
+
+```
+command (rev/s) = (TANI - ANICDB) * DMVSCL / 10
+```
+
+`DMVSCL` is the full-scale velocity a 10 V input produces. With nothing driving `AIN`
+the input floats at ~0.92 V, so `DMVSCL` alone sets the speed:
+
+```python
+drive.commanded_velocity()      # what the analog input is asking for, rev/s
+drive.set("velocity_scaling", 0.25)
+```
+
+### Open-loop droop is significant
+
+The shaft does **not** run at the commanded speed:
+
+| `DMVSCL` | commanded | measured | R² |
+| --- | --- | --- | --- |
+| 0.19 | 1.003 RPM | 0.682 RPM | 0.9955 |
+| 0.25 | 1.320 RPM | **1.009 RPM** | 0.9990 |
+| 0.28 | 1.478 RPM | 1.201 RPM | 0.9999 |
+
+Two things to notice. There is a **~32% shortfall** at the low end, and the response is
+**not proportional** — a straight line through those points has a negative intercept,
+i.e. some command is consumed before the shaft moves at all. Both are what you would
+expect from stiction with **`SGI` at 0**: no integral gain means nothing drives the
+steady-state error to zero.
+
+So a target speed needs either integral gain, or empirical calibration as above. Two
+measurements are enough to fit the line. `DMVSCL` resolution is 0.01, which near 1 RPM
+is about a 6% step, so ~±3% is the best that scaling alone can place.
+
+**1 RPM was achieved at `DMVSCL 0.25` — measured 1.0086 RPM, 0.9% high.**
 
 ## Remaining work
 
-1. **Zero the analog command input.** It still stands at ~0.92 V, so the motor starts
-   turning the moment the drive energises — and a closed enable input auto-enables at
-   power-up. Short `AIN+` (pin **14**) to `AIN-` (pin **15**), then call
-   `zero_command_offset()`.
-2. Re-measure position against velocity on a quiet link, to settle the discrepancy
-   above.
-3. Decode the `TAS` bits, which remain undocumented in Rev G.
+1. **Zero the analog command input.** It still stands at ~0.92 V, so the motor turns
+   whenever the drive energises — and a closed enable input auto-enables at power-up.
+   Short `AIN+` (pin **14**) to `AIN-` (pin **15**), then call
+   `zero_command_offset()`. Once zeroed, speed has to come from a real command
+   voltage rather than from scaling a floating input.
+2. **Tune the velocity loop** if the shaft speed needs to match the command. `SGI` is
+   0, and the droop above follows from that.
+3. **Reduce the serial noise** — shielded cable, routed away from the motor leads.
+   The retry logic hides most of it, but not corruption that lands on a valid ASCII
+   character.
+4. Decode the `TAS` bits, which remain undocumented in Rev G.
 
 ## Still unconfirmed
 

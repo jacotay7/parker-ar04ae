@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import Optional, Union
 
 from .errors import (
@@ -178,6 +179,32 @@ PARAMETER_COMMANDS: dict[str, str] = {
     for group in PARAMETERS.values()
     for name, entry in group.items()
 }
+
+
+@dataclass
+class VelocityMeasurement:
+    """Shaft speed measured from encoder position over time.
+
+    ``TVELA`` is too noisy to trust at low speed - at ~1 RPM its standard
+    deviation was over a third of its mean - so this integrates ``TPE`` instead
+    and fits a line through it. ``r_squared`` says how straight that was: a
+    steady speed gives >0.999, and a low value means the samples were disturbed
+    or the speed was not constant.
+    """
+
+    rev_per_s: float
+    r_squared: float
+    samples: int
+    duration: float
+
+    @property
+    def rpm(self) -> float:
+        return self.rev_per_s * 60.0
+
+    def __str__(self) -> str:
+        return (f"{self.rpm:.4f} RPM ({self.rev_per_s:.5f} rev/s), "
+                f"R^2 {self.r_squared:.5f} from {self.samples} samples "
+                f"over {self.duration:.1f}s")
 
 
 class AriesDrive:
@@ -677,6 +704,82 @@ class AriesDrive:
         return True, (
             f"DMODE{mode} ({name}): command input is {volts:+.3f} V, outside the "
             f"{deadband:.3f} V deadband{estimate} - the motor will move on enable"
+        )
+
+    def commanded_velocity(self) -> float:
+        """Velocity the analog input is currently commanding, in rev/s.
+
+        Applies the manual's formula from the ``ANICDB`` entry:
+        ``(TANI - ANICDB) * DMVSCL / 10``, valid in velocity mode (``DMODE4``).
+        This is what the drive is *asking* for; what the shaft actually does is
+        :meth:`measure_velocity`, and the two differ - see the README on
+        open-loop droop.
+        """
+        volts = self.analog_input()
+        deadband = self._optional_float("ANICDB", 0.04)
+        scale = self._optional_float("DMVSCL", 0.0)
+        if abs(volts) <= deadband:
+            return 0.0
+        magnitude = (abs(volts) - deadband) * scale / 10.0
+        return magnitude if volts > 0 else -magnitude
+
+    def measure_velocity(
+        self,
+        duration: float = 10.0,
+        interval: float = 0.25,
+        eres: Optional[int] = None,
+    ) -> VelocityMeasurement:
+        """Measure actual shaft speed by fitting a line through ``TPE``.
+
+        The drive must already be enabled and turning; this only observes.
+        Corrupted replies are discarded, as are samples that break
+        monotonicity, since an undetected single-character corruption in a
+        position reading would otherwise dominate the result.
+
+        ``eres`` defaults to the drive's own ``ERES``. Raises ``ValueError`` if
+        too few usable samples were collected.
+        """
+        if eres is None:
+            eres = self.query("ERES").as_int()
+
+        samples: list[tuple[float, int]] = []
+        last: Optional[int] = None
+        start = time.monotonic()
+        while time.monotonic() - start < duration:
+            resp = self.raw("TPE", strict=False)
+            if not resp.corrupted and not resp.empty:
+                try:
+                    position = int(resp.value)
+                except ValueError:
+                    position = None
+                if position is not None and (last is None or position >= last):
+                    samples.append((time.monotonic() - start, position))
+                    last = position
+            time.sleep(interval)
+
+        if len(samples) < 3:
+            raise ValueError(
+                f"only {len(samples)} usable position samples in {duration:g}s; "
+                "the link may be too noisy, or the drive is not turning"
+            )
+
+        n = len(samples)
+        mean_t = sum(t for t, _ in samples) / n
+        mean_p = sum(p for _, p in samples) / n
+        var_t = sum((t - mean_t) ** 2 for t, _ in samples)
+        if var_t == 0:
+            raise ValueError("all samples landed at the same instant")
+        slope = sum((t - mean_t) * (p - mean_p) for t, p in samples) / var_t
+
+        ss_res = sum((p - (mean_p + slope * (t - mean_t))) ** 2 for t, p in samples)
+        ss_tot = sum((p - mean_p) ** 2 for _, p in samples)
+        r_squared = 1.0 - ss_res / ss_tot if ss_tot else 1.0
+
+        return VelocityMeasurement(
+            rev_per_s=slope / eres,
+            r_squared=r_squared,
+            samples=n,
+            duration=samples[-1][0],
         )
 
     def _optional_float(self, command: str, fallback: float) -> float:

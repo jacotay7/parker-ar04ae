@@ -479,3 +479,83 @@ def test_retries_can_be_disabled_per_call(port):
     d = AriesDrive(byte_port=port, timeout=0.2).connect()
     d.raw("TVELA", strict=False, retries=0)
     assert port.written.count("TVELA") == 1
+
+
+# -- velocity ---------------------------------------------------------------
+def test_commanded_velocity_applies_the_manual_formula(drive):
+    # TANI 0.940, ANICDB 0.040, DMVSCL 100.0 -> (0.940-0.040)*100/10
+    assert drive.commanded_velocity() == pytest.approx(9.0)
+
+
+def test_commanded_velocity_is_zero_inside_the_deadband(port):
+    port.replies["TANI"] = "0.020"
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    assert d.commanded_velocity() == 0.0
+
+
+def test_commanded_velocity_follows_the_sign_of_the_input(port):
+    port.replies["TANI"] = "-0.940"
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    assert d.commanded_velocity() == pytest.approx(-9.0)
+
+
+def _ramping_port(counts_per_second, eres="944000", jitter=None):
+    """A fake whose TPE advances at a fixed rate in real time."""
+    import time
+
+    start = time.monotonic()
+    state = {"n": 0}
+
+    def tpe(_cmd):
+        state["n"] += 1
+        if jitter and state["n"] in jitter:
+            return jitter[state["n"]]
+        return str(int((time.monotonic() - start) * counts_per_second))
+
+    return FakePort({**ALL_REPLIES, "TPE": tpe, "ERES": eres})
+
+
+def test_measure_velocity_recovers_the_rate():
+    d = AriesDrive(byte_port=_ramping_port(94400), timeout=0.3).connect()
+    m = d.measure_velocity(duration=1.2, interval=0.05)
+    assert m.rev_per_s == pytest.approx(0.1, rel=0.05)
+    assert m.rpm == pytest.approx(6.0, rel=0.05)
+    assert m.r_squared > 0.99
+    assert m.samples >= 3
+
+
+def test_measure_velocity_discards_corrupted_samples():
+    # Sample 5 comes back mangled; the fit should not be dragged by it.
+    port = _ramping_port(94400, jitter={5: "99999�9"})
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    m = d.measure_velocity(duration=1.2, interval=0.05)
+    assert m.rev_per_s == pytest.approx(0.1, rel=0.05)
+
+
+def test_measure_velocity_discards_backward_jumps():
+    # An undetectable corruption that stays valid ASCII, but goes backwards.
+    port = _ramping_port(94400, jitter={6: "12"})
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    m = d.measure_velocity(duration=1.2, interval=0.05)
+    assert m.rev_per_s == pytest.approx(0.1, rel=0.05)
+
+
+def test_measure_velocity_uses_an_explicit_eres():
+    d = AriesDrive(byte_port=_ramping_port(94400), timeout=0.3).connect()
+    m = d.measure_velocity(duration=1.0, interval=0.05, eres=9440)
+    assert m.rev_per_s == pytest.approx(10.0, rel=0.05)
+
+
+def test_measure_velocity_raises_without_enough_samples(port):
+    port.replies["TPE"] = "���"
+    d = AriesDrive(byte_port=port, timeout=0.2, retries=0).connect()
+    with pytest.raises(ValueError) as exc:
+        d.measure_velocity(duration=0.4, interval=0.1)
+    assert "usable position samples" in str(exc.value)
+
+
+def test_velocity_measurement_str():
+    from parker_ar04ae import VelocityMeasurement
+
+    m = VelocityMeasurement(rev_per_s=0.0168, r_squared=0.999, samples=53, duration=32.0)
+    assert "1.0080 RPM" in str(m)
