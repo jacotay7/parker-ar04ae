@@ -56,6 +56,19 @@ class VerificationError(AriesError):
         super().__init__(msg)
 
 
+class UnsafeOperationError(AriesError):
+    """A command was refused because it would have started the motor.
+
+    Raised by operations that look harmless over the serial link but are not
+    with this drive's wiring - notably :meth:`~parker_ar04ae.drive.AriesDrive.reset`,
+    since a closed hardware enable input makes the drive energise itself on
+    power-up and act immediately on whatever the analog command input holds.
+
+    Every such check can be overridden with ``force=True`` once the axis is
+    known to be safe.
+    """
+
+
 # Friendlier aliases that do not shadow the builtins inside this package.
 AriesConnectionError = ConnectionError_
 AriesTimeoutError = TimeoutError_

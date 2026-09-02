@@ -5,7 +5,7 @@ Reply values are the ones captured from an AR-04AE running Aries OS 3.30.
 
 import pytest
 
-from parker_ar04ae import AriesDrive, CommandError
+from parker_ar04ae import AriesDrive, CommandError, UnsafeOperationError
 from parker_ar04ae.drive import PARAMETER_COMMANDS, PARAMETERS
 from parker_ar04ae.errors import (
     ConnectionError_,
@@ -276,13 +276,13 @@ def test_disable_verifies(drive, port):
 
 
 def test_reset_without_waiting_just_sends_it(drive, port):
-    assert drive.reset(wait=False) is None
+    assert drive.reset(wait=False, force=True) is None
     assert port.written[-1] == "RESET"
 
 
 def test_reset_raises_if_the_drive_never_reboots(drive):
     with pytest.raises(VerificationError) as exc:
-        drive.reset(timeout=0.4)
+        drive.reset(timeout=0.4, force=True)
     assert "never stopped answering" in str(exc.value)
 
 
@@ -583,3 +583,58 @@ def test_pset_cannot_be_read_back(drive):
     # PSET is an action; reading it bare would be a write with no argument.
     with pytest.raises(ValueError):
         drive._guard_action("PSET")
+
+
+# -- reset safety guard ----------------------------------------------------
+def test_reset_refuses_when_it_would_start_the_motor(drive, port):
+    # ERROR reports no E46, so the interlock is closed and the drive will
+    # energise itself on power-up - into a standing analog command.
+    with pytest.raises(UnsafeOperationError) as exc:
+        drive.reset()
+    assert "would start" in str(exc.value)
+    assert "RESET" not in port.written
+
+
+def test_reset_is_allowed_when_the_interlock_is_open(port):
+    port.replies["ERROR"] = "E46-Hardware Enable"
+    d = AriesDrive(byte_port=port, timeout=0.2).connect()
+    with pytest.raises(VerificationError):        # never reboots in the fake
+        d.reset(timeout=0.3)
+    assert "RESET" in port.written                # but it did send it
+
+
+def test_reset_is_allowed_when_the_command_scales_to_zero(port):
+    port.replies["DMVSCL"] = "0.000"
+    d = AriesDrive(byte_port=port, timeout=0.2).connect()
+    with pytest.raises(VerificationError):
+        d.reset(timeout=0.3)
+    assert "RESET" in port.written
+
+
+def test_reset_force_overrides_the_guard(drive, port):
+    drive.reset(wait=False, force=True)
+    assert port.written[-1] == "RESET"
+
+
+def test_hardware_enable_closed_reflects_e46(port):
+    d = AriesDrive(byte_port=port, timeout=0.2).connect()
+    assert d.hardware_enable_closed() is True
+    port.replies["ERROR"] = "E46-Hardware Enable"
+    assert d.hardware_enable_closed() is False
+
+
+# -- will_move_on_enable and the velocity scale ----------------------------
+def test_zero_velocity_scale_means_no_motion(port):
+    port.replies["DMVSCL"] = "0.000"
+    d = AriesDrive(byte_port=port, timeout=0.2).connect()
+    will_move, why = d.will_move_on_enable()
+    assert will_move is False
+    assert "scales it to zero" in why
+
+
+def test_unreadable_scale_is_treated_as_unsafe(port):
+    del port.replies["DMVSCL"]
+    d = AriesDrive(byte_port=port, timeout=0.2).connect()
+    will_move, why = d.will_move_on_enable()
+    assert will_move is True
+    assert "could not be read" in why

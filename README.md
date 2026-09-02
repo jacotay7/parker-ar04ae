@@ -293,7 +293,7 @@ assert port.written == ["TREV"]        # what actually went on the wire
 `DEMO_REPLIES` holds values captured from the real drive.
 
 ```bash
-python -m pytest                          # 139 tests, no hardware needed
+python -m pytest                          # 146 tests, no hardware needed
 python examples/basic_test.py --demo      # the bring-up script against the fake
 python examples/basic_test.py /dev/cu.PL2303G-USBtoUART10
 ```
@@ -651,6 +651,56 @@ measurements are enough to fit the line. `DMVSCL` resolution is 0.01, which near
 is about a 6% step, so ~±3% is the best that scaling alone can place.
 
 **1 RPM was achieved at `DMVSCL 0.25` — measured 1.0086 RPM, 0.9% high.**
+
+## Feedback type: incremental quadrature
+
+The R200D on this drive uses an **incremental quadrature encoder with hall sensors**,
+not an absolute encoder. Five independent pieces of evidence:
+
+| | |
+| --- | --- |
+| `SFB` | `2` — "specify Standard Encoder". Absolute is `6`, "reserved for absolute encoder" |
+| `STATUS` | `Feedback Type: STANDARD ENCODER` |
+| `THALL` | valid states that change as the shaft turns — halls are needed for commutation **because** the encoder cannot give absolute rotor position |
+| Position at power-up | `TPE` went from 2,377,235 to ~0 across a reset. Nothing absolute is restored |
+| Connector | differential A/B/Z plus three halls (MOTOR FEEDBACK pins 1–14) |
+
+The same connector pins carry alternate names — `Data+/-`, `SCLK+/-`, `SIN/COS` — so the
+drive supports smart, absolute and resolver feedback on that hardware. This unit is
+detecting and configured for a standard encoder.
+
+Practical consequences: **position is lost on every power cycle**, there is no absolute
+reference, and `establish_position()` is the only way to set an origin.
+
+### `ERES` is worth verifying
+
+`ERES` reads **944000** counts/rev. For a quadrature encoder that implies 236,000
+lines, which is implausibly high, and `DMTR` reports `OTHER=R200D` — a third-party
+motor whose parameters were configured by hand rather than read from a smart encoder.
+
+Every speed and distance figure in this README is scaled by `ERES`, so if it is wrong
+they are all wrong by the same factor — the 1 RPM result included. Nothing measured so
+far can catch that, because the drive derives `TVELA` from `TPE` and `ERES` too, so
+both move together.
+
+A physical check settles it: with the drive disabled and the shaft free, mark it, turn
+it exactly one revolution by hand, and read the change in `TPE`. That delta *is* the
+true counts per revolution.
+
+### Resetting safely when the interlock is closed
+
+Once the hardware enable is closed the drive **energises itself on power-up** and acts
+on the analog command immediately, so a reset starts the motor. `reset()` refuses in
+that situation and raises `UnsafeOperationError`; `force=True` overrides it.
+
+```python
+drive.hardware_enable_closed()   # True once the interlock is made
+drive.reset()                    # UnsafeOperationError if that would start the motor
+```
+
+Setting `DMVSCL` to 0 makes the command scale to zero, so the drive still auto-enables
+but holds still — which is how the reset above was performed safely. Restore the
+previous value afterwards.
 
 ## Homing
 

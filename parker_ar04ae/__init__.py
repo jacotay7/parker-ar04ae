@@ -12,6 +12,7 @@ from .errors import (
     AriesError,
     AriesTimeoutError,
     CommandError,
+    UnsafeOperationError,
 )
 from .response import Response
 from .transport import BytePort, SerialPort, SerialTransport
@@ -27,6 +28,7 @@ __all__ = [
     "AriesConnectionError",
     "AriesTimeoutError",
     "CommandError",
+    "UnsafeOperationError",
     "Response",
     "VelocityMeasurement",
     "BytePort",

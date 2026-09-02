@@ -28,6 +28,7 @@ from .errors import (
     CommandError,
     ConnectionError_,
     TimeoutError_,
+    UnsafeOperationError,
     VerificationError,
 )
 from .protocol import DEFAULT_BAUD, ERROR_PREFIX
@@ -525,6 +526,22 @@ class AriesDrive:
             )
         return state
 
+    def _refuse_unsafe_reset(self) -> None:
+        """Raise if rebooting would energise the drive into a standing command."""
+        try:
+            if not self.hardware_enable_closed():
+                return  # the interlock is open, so the drive cannot self-enable
+            will_move, why = self.will_move_on_enable()
+        except AriesError:
+            return  # cannot tell; do not block on a failed check
+        if will_move:
+            raise UnsafeOperationError(
+                f"refusing to reset: the motor would start. The hardware enable "
+                f"input is closed, so the drive energises itself on power-up, and "
+                f"{why}. Zero the command input first (short AIN+ to AIN-, then "
+                f"zero_command_offset()), or pass force=True."
+            )
+
     def _why_not_enabled(self) -> str:
         """Ask the drive why it refused, for the enable failure message."""
         try:
@@ -547,7 +564,18 @@ class AriesDrive:
             raise VerificationError("DRIVE0", False, True, "the drive stayed enabled")
         return state
 
-    def reset(self, wait: bool = True, timeout: float = 20.0) -> Optional[float]:
+    def hardware_enable_closed(self) -> bool:
+        """True if the hardware enable interlock is closed.
+
+        ``E46`` is reported while the input is open, so its absence means the
+        interlock is made - and that the drive will energise itself the next
+        time it powers up.
+        """
+        return not any(code == "E46" for code, _ in self.active_errors())
+
+    def reset(
+        self, wait: bool = True, timeout: float = 20.0, force: bool = False
+    ) -> Optional[float]:
         """Reboot the drive (``RESET``), returning seconds until it answered.
 
         The reboot cuts the echo off mid-word and the drive is unreachable for
@@ -558,7 +586,16 @@ class AriesDrive:
 
         Parameters survive the reboot - the drive stores them itself, with no
         save command needed.
+
+        **A reset can start the motor.** A closed hardware enable input makes
+        the drive energise itself on power-up, and in an analog command mode it
+        acts on whatever is on the input at that moment - so a reset with a
+        standing command turns the motor with nothing in between. This refuses
+        to run in that situation; pass ``force=True`` to override once you have
+        satisfied yourself the axis is safe.
         """
+        if not force:
+            self._refuse_unsafe_reset()
         self.transport.write_line(self._format("RESET", ()))
         if not wait:
             return None
@@ -710,18 +747,30 @@ class AriesDrive:
             )
 
         scale_cmd = "DMVSCL" if mode == 4 else "DMTSCL"
-        scale = self._optional_float(scale_cmd, 0.0)
+        scale = self._read_float(scale_cmd)
+        units = "rev/s" if mode == 4 else "A"
+
+        if scale is None:
+            # Cannot read the scaling, so cannot rule motion out. Assume it moves.
+            return True, (
+                f"DMODE{mode} ({name}): command input is {volts:+.3f} V, outside "
+                f"the {deadband:.3f} V deadband, and {scale_cmd} could not be read "
+                f"- assume the motor will move on enable"
+            )
+
         # Rev G, ANICDB: command = (Vin - DCMDZ -/+ ANICDB) * scale / 10
         magnitude = (abs(volts) - deadband) * scale / 10.0
-        units = "rev/s" if mode == 4 else "A"
-        estimate = (
-            f", which {scale_cmd}{scale:g} scales to about "
-            f"{magnitude * (1 if volts > 0 else -1):+.3f} {units}"
-            if scale else ""
-        )
+        if magnitude == 0:
+            return False, (
+                f"DMODE{mode} ({name}): command input is {volts:+.3f} V, but "
+                f"{scale_cmd}{scale:g} scales it to zero"
+            )
+
+        signed = magnitude if volts > 0 else -magnitude
         return True, (
             f"DMODE{mode} ({name}): command input is {volts:+.3f} V, outside the "
-            f"{deadband:.3f} V deadband{estimate} - the motor will move on enable"
+            f"{deadband:.3f} V deadband, which {scale_cmd}{scale:g} scales to about "
+            f"{signed:+.3f} {units} - the motor will move on enable"
         )
 
     def commanded_velocity(self) -> float:
@@ -800,13 +849,18 @@ class AriesDrive:
             duration=samples[-1][0],
         )
 
-    def _optional_float(self, command: str, fallback: float) -> float:
-        """Read a float, falling back when the firmware lacks the command."""
+    def _read_float(self, command: str) -> Optional[float]:
+        """Read a float, or ``None`` when the drive will not give one."""
         resp = self.raw(command, strict=False)
         try:
             return resp.as_float()
         except (ValueError, IndexError):
-            return fallback
+            return None
+
+    def _optional_float(self, command: str, fallback: float) -> float:
+        """Read a float, falling back when the firmware lacks the command."""
+        value = self._read_float(command)
+        return fallback if value is None else value
 
     def __repr__(self) -> str:
         state = "connected" if self.is_connected else "closed"
