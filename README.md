@@ -738,12 +738,39 @@ So a manual "home" is: drive the shaft to your reference (in `DMODE4` that means
 analog command), stop, then `establish_position(0)`. A repeatable, switch-referenced
 home needs a controller upstream of the drive.
 
+## Analog command input: zeroed
+
+`AIN+` (pin 14) shorted to `AIN-` (pin 15), then a bare `DCMDZ`:
+
+```
+TANI before   +0.1246 V   (spread 0.0010 over 8 samples)
+TANI after    +0.0010 V   (spread 0.0000)
+commanded      0.00000 rev/s - inside the 0.040 V deadband
+```
+
+`python -m parker_ar04ae check` now reports **safe to enable**.
+
+Two things worth recording.
+
+**The short is genuine, and the residual was the drive's own offset.** With `AIN+`
+tied to `AIN-` the raw input still sat at ~0.200 V rather than 0. That is an input
+offset, not a wiring fault — the giveaway is the spread: 1 mV across eight samples
+against 24 mV when the input was floating. Removing exactly this offset is what
+`DCMDZ` is for.
+
+**`DCMDZ` is now approximately 0.200 V, and this README is the only record of that.**
+The command has no read-back — the manual gives its Response as `N/A` — so nothing on
+the drive will tell you what it is set to. The only visible evidence is that `TANI`
+reads ~0 with the input shorted. If the zero ever needs restoring, `DCMDZ=0.2` is the
+value; `DCMDZ=0` returns it to the factory default and would put ~0.2 V of standing
+command back.
+
 ## Remaining work
 
-1. **Zero the analog command input.** It still stands at ~0.92 V, so the motor turns
-   whenever the drive energises — and with the interlock now closed that includes
-   every power-up. Short `AIN+` (pin **14**) to `AIN-` (pin **15**), then call
-   `zero_command_offset()`. This is the last standing hazard.
+1. **Reconnect the enable supply.** `E46` is back, so `ENABLE+` (pin 1) is no longer
+   being fed — the drive cannot enable until it is. With the command input now zeroed
+   this is safe to do: a power-up with the interlock closed will energise the drive,
+   but it will hold still rather than turn.
 2. **Tune the velocity loop** if commanded speed needs to match actual. `SGI` is 0, and
    the ~32% droop follows from that.
 3. **Reduce the serial noise** — shielded cable routed away from the motor leads. The
