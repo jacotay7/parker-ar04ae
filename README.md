@@ -440,6 +440,25 @@ before anything could intervene.
 Per the manual, if the enable input is closed at power-up the drive enables itself
 (`DRIVE1`) without a serial command.
 
+### Fault output — DRIVE I/O pins 9 and 16
+
+`FAULT+` is pin **9** (collector), `FAULT−` is pin **16** (emitter). An opto-isolated
+transistor, not a relay contact and **not a power source** — it can only pass current
+supplied from elsewhere. Max 30 V blocking, **10 mA continuous**.
+
+| Drive condition | Fault output |
+| --- | --- |
+| Enabled, no faults | closed (conducting) |
+| Faulted | open |
+| Not enabled, or no AC on L1/L2 | open |
+
+Note the third row: **the fault output is open whenever the drive is not enabled.** So
+it cannot by itself supply the enable input — with the drive disabled there would be no
+path to start current flowing, and the circuit could never bootstrap. Any scheme that
+routes the fault output to `ENABLE+` needs a separate momentary path (a start button in
+parallel) to get going, and its holding current would sit right at the 10 mA output
+limit against the enable's 3–12 mA draw.
+
 ### Motor thermal switch — MOTOR FEEDBACK pins 10 and 15
 
 | | |
