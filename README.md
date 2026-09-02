@@ -442,6 +442,28 @@ For a bench bring-up with no 24 V rail to hand, the MOTOR FEEDBACK connector has
 from the drive's own supply and so gives up the optical isolation — reasonable on a
 bench, not in a machine.
 
+### The harness on the bench unit
+
+Both cathodes are already returned to `DGND` — `ENABLE−` (21) to pin 2, `RESET−` (23)
+to pin 22 — and both anodes, `ENABLE+` (1) and `RESET+` (18, via a red button), are
+open. So both halves are built the same way and the one missing element is a positive
+supply, not a link between the loose wires.
+
+To finish it, with any free `DGND` pin (17, 19, 20 or 24) as the supply return:
+
+```
+supply + ──┬──[ interlock ]────── pin 1  (ENABLE+)
+           └──[ red button ]───── pin 18 (RESET+)
+supply - ────────────────────────  pin 17 (DGND)
+                                   pin 21 → pin 2  (DGND)   already wired
+                                   pin 23 → pin 22 (DGND)   already wired
+```
+
+**Check the button is momentary.** A momentary button on `RESET+` is a reset button.
+A latching or twist-release mushroom head held in would hold the drive in reset
+indefinitely, which would be an odd thing to build — and would suggest it was meant as
+an E-stop. An E-stop belongs in the `ENABLE+` feed, breaking it, never on `RESET`.
+
 **Zero the analog command input before you close the interlock.** Per the `DRIVE`
 entry, "if the hardware enable input is closed on power-up, the drive is automatically
 enabled (generates a `DRIVE1` command)" — no serial command involved. With a standing
