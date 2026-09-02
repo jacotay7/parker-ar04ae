@@ -229,6 +229,7 @@ DOC_REPLIES: dict[str, Reply] = {
     ],
     "CONFIG": "NO ERRORS",
     "CERRLG": None,   # an action: echoes, then silence
+    "PSET": None,     # position reference; writes only, no read-back
     "SFB": "5",
     "ANICDB": "0.040",
     "DCMDZ": "0.000",

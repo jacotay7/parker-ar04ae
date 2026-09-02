@@ -559,3 +559,27 @@ def test_velocity_measurement_str():
 
     m = VelocityMeasurement(rev_per_s=0.0168, r_squared=0.999, samples=53, duration=32.0)
     assert "1.0080 RPM" in str(m)
+
+
+# -- position reference ----------------------------------------------------
+def test_establish_position_defaults_to_zero(drive, port):
+    drive.establish_position()
+    assert port.written[-1] == "PSET0"
+
+
+def test_establish_position_accepts_a_value(drive, port):
+    drive.establish_position(-1500)
+    assert port.written[-1] == "PSET-1500"
+
+
+def test_establish_position_is_not_retried(port):
+    # It is a write: re-sending would reapply the offset.
+    d = AriesDrive(byte_port=port, timeout=0.2, retries=2).connect()
+    d.establish_position(0)
+    assert port.written.count("PSET0") == 1
+
+
+def test_pset_cannot_be_read_back(drive):
+    # PSET is an action; reading it bare would be a write with no argument.
+    with pytest.raises(ValueError):
+        drive._guard_action("PSET")

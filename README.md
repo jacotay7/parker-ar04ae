@@ -293,7 +293,7 @@ assert port.written == ["TREV"]        # what actually went on the wire
 `DEMO_REPLIES` holds values captured from the real drive.
 
 ```bash
-python -m pytest                          # 135 tests, no hardware needed
+python -m pytest                          # 139 tests, no hardware needed
 python examples/basic_test.py --demo      # the bring-up script against the fake
 python examples/basic_test.py /dev/cu.PL2303G-USBtoUART10
 ```
@@ -651,6 +651,33 @@ measurements are enough to fit the line. `DMVSCL` resolution is 0.01, which near
 is about a 6% step, so ~±3% is the best that scaling alone can place.
 
 **1 RPM was achieved at `DMVSCL 0.25` — measured 1.0086 RPM, 0.9% high.**
+
+## Homing
+
+**The drive cannot home.** `HOM` returns `ERROR: Unknown Command`, and the words
+"home", "homing" and "HOM" appear nowhere in the 208 pages of Rev G. The AR-04AE is a
+drive, not a controller: it has no motion program, no home-switch input and no way to
+seek an index pulse.
+
+What it gives you instead:
+
+- **The encoder index, passed through** to `ENC Z+` / `ENC Z-` on DRIVE I/O pins
+  **7** and **8**, along with A and B on pins 3–6. An external controller homes against
+  those.
+- **`PSET`** — establish an absolute position reference. This is *not* a move; nothing
+  turns. It relabels where the shaft already is.
+
+```python
+drive.establish_position(0)     # PSET0 - call the present position zero
+drive.position()                # 0
+```
+
+Verified on hardware: `TPE` went from 6782765 to 0, with `TPC` shifted by the same
+offset. `PSET` has no read-back of its own, so check the result with `position()`.
+
+So a manual "home" is: drive the shaft to your reference (in `DMODE4` that means the
+analog command), stop, then `establish_position(0)`. A repeatable, switch-referenced
+home needs a controller upstream of the drive.
 
 ## Remaining work
 

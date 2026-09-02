@@ -639,6 +639,24 @@ class AriesDrive:
         return FEEDBACK_TYPES.get(self.query("SFB").as_int(), "unknown")
 
     # -- analog command input ---------------------------------------------
+    def establish_position(self, counts: int = 0) -> Response:
+        """Define the present position to be ``counts`` (``PSET``).
+
+        This is a *reference* change, not a move: nothing turns, the drive
+        simply relabels where it already is. ``PSET0`` makes the current
+        position zero.
+
+        It is **not homing.** The AR-04AE has no motion controller, so it cannot
+        seek a home switch or an index pulse - the manual contains no homing
+        command at all. What it offers instead is the encoder index on DRIVE I/O
+        pins 7 and 8 (`ENC Z+/-`), which an external controller uses to home;
+        `PSET` is then how you set the reference once you are there.
+
+        ``PSET`` has no read-back of its own; check the result with
+        :meth:`position` or :meth:`commanded_position`.
+        """
+        return self.raw("PSET", counts, expect_reply=False)
+
     def zero_command_offset(self, volts: Optional[Number] = None) -> Response:
         """Set the analog command zero point (``DCMDZ``).
 
