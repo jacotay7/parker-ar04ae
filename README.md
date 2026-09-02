@@ -463,22 +463,38 @@ third-party motor (`DMTR` reports `OTHER=R200D`) and have not been checked again
 datasheet, so the model's accuracy is unverified. Worth confirming them before running
 the motor hard or unattended.
 
+## Feedback: reconnect, then reset
+
+The MOTOR FEEDBACK connector had come unplugged, which produced
+`NO FEEDBACK DETECTED`, `SFB 0`, `THALL 0` and the pair `E37`/`E38`.
+
+Reconnecting it is not enough on its own. `SFB` auto-detection runs at power-up, and
+the faults latch, so the drive keeps reporting the old state until it restarts:
+
+```python
+drive.reset()   # re-runs feedback detection and clears the latched faults
+```
+
+After that: `Feedback Type: STANDARD ENCODER`, `SFB 2`, `THALL 5` — a valid hall state,
+the manual's Table 51 listing 1–6 as the valid ones — and `E26`, `E37`, `E38` all gone.
+
 ## Remaining work
 
-1. **Feedback is not being detected.** `STATUS` reports `NO FEEDBACK DETECTED`,
-   `SFB` reads `0` (unknown), `THALL` reads `0` — all three hall inputs low, which is
-   not a valid state; the manual's Table 51 lists 1–6 as the valid ones. `E37` (bad
-   hall state) and `E38` (feedback failure) follow from this. Earlier in the same
-   session this drive reported `STANDARD ENCODER`, `SFB 2` and `THALL 3`, so the
-   connection has been lost rather than never having worked. Check the MOTOR FEEDBACK
-   connector: hall power on pins **5** (+5 V) and **6** (DGND), halls on **9**, **13**
-   and **14**; encoder power on **4** (+5 V) and **3** (DGND), with A on **8**/**7**,
-   B on **12**/**11**, Z on **1**/**2**.
-2. **Close the enable interlock** across DRIVE I/O pins 1 and 21 — an opto-isolated
-   LED, not a dry contact. See [Wiring](#wiring). Until then `E46` stands.
-3. Zero the command input: short `AIN+` (pin 14) to `AIN-` (pin 15), then
-   `zero_command_offset()`. Confirm `check` reports *safe to enable*.
-4. Only then `enable()`, motor unloaded. Nothing has ever been commanded to move.
+Both items are wiring, not serial.
+
+1. **Close the enable interlock** across DRIVE I/O pins 1 and 21. It is an
+   opto-isolated LED, **not a dry contact** — jumpering the pins together does
+   nothing. See [Wiring](#wiring). Until this is done `E46` stands and `DRIVE1` is
+   refused.
+2. **Zero the analog command input.** It sits at ~0.92 V, which in `DMODE4` scales to
+   about +0.088 rev/s — the motor would creep as soon as it energises. Short `AIN+`
+   (pin **14**) to `AIN-` (pin **15**), or command 0 V from the controller, *then*
+   call `zero_command_offset()`. Doing it with the input floating would bake the
+   floating voltage in as the zero point, and `DCMDZ` has no read-back to recover
+   from that.
+
+`python -m parker_ar04ae check` must report *safe to enable* before going further.
+Then `enable()`, motor unloaded. Nothing has ever been commanded to move.
 
 ## Still unconfirmed
 
