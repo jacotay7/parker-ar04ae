@@ -135,3 +135,33 @@ def test_read_quiet_returns_what_arrived():
     port, t = make({"SGI": "0.000"})
     t.write_line("SGI0.1")
     assert "SGI0.1" in t.read_quiet(max_wait=0.5)
+
+
+# -- echoes mangled by noise -----------------------------------------------
+def test_echo_with_one_flipped_character_is_still_stripped():
+    _, t = make()
+    assert t.strip_echo("TANI", ["TQNI", "0.001"]) == ["0.001"]
+    assert t.strip_echo("TVBUS", ["\\VBUS", "163.1"]) == ["163.1"]
+    assert t.strip_echo("DRIVE", ["DRIWE", "0"]) == ["0"]
+
+
+def test_echo_matching_needs_the_same_length():
+    _, t = make()
+    assert not SerialTransport.looks_like_echo("TANI", "TAN")
+    assert not SerialTransport.looks_like_echo("TANI", "TANIX")
+
+
+def test_two_flipped_characters_are_not_treated_as_an_echo():
+    _, t = make()
+    assert not SerialTransport.looks_like_echo("TANI", "XQNI")
+
+
+def test_a_real_value_is_not_mistaken_for_an_echo():
+    _, t = make()
+    assert t.strip_echo("TPE", ["12345"]) == ["12345"]
+    assert not SerialTransport.looks_like_echo("SGP", "2.0")
+
+
+def test_exact_echo_still_works():
+    _, t = make()
+    assert SerialTransport.looks_like_echo("TANI", "tani")

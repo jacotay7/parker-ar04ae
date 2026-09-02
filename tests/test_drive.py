@@ -468,12 +468,6 @@ def test_writes_are_never_retried(port):
     assert port.written.count("SGI0.1") == 1
 
 
-def test_an_error_reply_is_not_retried(port):
-    d = AriesDrive(byte_port=port, timeout=0.2, retries=2).connect()
-    d.raw("NOSUCHCMD", strict=False)
-    assert port.written.count("NOSUCHCMD") == 1
-
-
 def test_retries_can_be_disabled_per_call(port):
     port.replies["TVELA"] = "0.0�2"
     d = AriesDrive(byte_port=port, timeout=0.2).connect()
@@ -685,3 +679,18 @@ def test_typed_read_retries_a_bit_flipped_command_echo(port):
     port.replies["TANI"] = lambda _c: next(seq)
     d = AriesDrive(byte_port=port, timeout=0.3).connect()
     assert d.analog_input() == pytest.approx(0.123)
+
+
+def test_a_corrupted_error_reply_is_retried(port):
+    # Noise mangled a good reply into something that reads as an error.
+    seq = iter(["ERROR: Unknown Commane", "4"])
+    port.replies["DMODE"] = lambda _c: next(seq)
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    assert d.drive_mode() == 4
+
+
+def test_a_genuine_error_still_raises_after_retries(port):
+    d = AriesDrive(byte_port=port, timeout=0.2, retries=2).connect()
+    with pytest.raises(CommandError):
+        d.raw("NOSUCHCMD")
+    assert port.written.count("NOSUCHCMD") == 3   # retried, then gave up

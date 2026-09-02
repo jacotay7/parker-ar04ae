@@ -293,7 +293,7 @@ assert port.written == ["TREV"]        # what actually went on the wire
 `DEMO_REPLIES` holds values captured from the real drive.
 
 ```bash
-python -m pytest                          # 152 tests, no hardware needed
+python -m pytest                          # 158 tests, no hardware needed
 python examples/basic_test.py --demo      # the bring-up script against the fake
 python examples/basic_test.py /dev/cu.PL2303G-USBtoUART10
 ```
@@ -655,6 +655,43 @@ corrupted sample there could call an unsafe state safe.
 Corruption happens whenever the drive is **enabled**, not only while the shaft turns:
 the PWM switches to hold position too.
 
+### How bad the noise is, measured
+
+Reading each status word nine times and counting how often the majority value came
+back intact:
+
+| | disabled | enabled |
+| --- | --- | --- |
+| `TAS` | 9/9 | 6/9 |
+| `TIN` | 9/9 | 3/9 |
+| `TOUT` | 9/9 | 5/9 |
+
+Perfect when idle, and a third to two thirds of reads mangled once the PWM is
+switching. **Any conclusion drawn from a single read while the drive is enabled is
+unsafe.** A single pass of `basic_test.py` reported `TAS` bit 6 and `TIN` bit 15 as
+set; a majority vote over nine reads showed both words are all-zeros. Those bits did
+not exist.
+
+Shielded serial cable, grounded at one end and routed away from the motor leads, is
+the fix. The retry and median logic makes the library usable meanwhile; it does not
+make the link good.
+
+### Status word meanings
+
+Rev G documents none of `TAS`, `TIN` or `TOUT`. Comparing majority-voted reads between
+enabled and disabled states:
+
+| word | enabled | disabled | reading |
+| --- | --- | --- | --- |
+| `TAS` | all zero | all zero | no fault bits set in either state |
+| `TIN` | all zero | all zero | the hardware enable input is **not** reflected here |
+| `TOUT` | all zero | bits **15, 16** | asserted while disabled |
+
+`TOUT` 15 and 16 line up with the fault output and brake relay. Per Table 28 the fault
+circuit is closed only when the drive is enabled and healthy, and `FLTDSB1` — the
+default, set on this drive — opens the brake relay and activates the fault output when
+the drive is disabled.
+
 ### The analog reading shifts between enabled and disabled
 
 `TANI` is not the same in both states — PWM coupling moves it by roughly 0.03–0.07 V.
@@ -867,7 +904,8 @@ stable and fault-free as it stands.
    the ~32% droop follows from that.
 3. **Reduce the serial noise** — shielded cable routed away from the motor leads. The
    retry logic hides most of it, but not corruption landing on a valid ASCII character.
-4. Decode the `TAS` bits, undocumented in Rev G.
+4. `TAS` reads all zeros in every state seen so far, so its bits remain undecoded —
+   they would need a fault deliberately provoked to map.
 
 ## Still unconfirmed
 

@@ -326,9 +326,16 @@ class AriesDrive:
             # write could apply it twice.
             if not expect_reply or attempt == attempts - 1:
                 break
-            if resp.corrupted or resp.empty:
-                log.debug("retrying %r (attempt %d): %s", text, attempt + 1,
-                          "corrupted" if resp.corrupted else "no reply")
+            # An error reply is retried too: noise can mangle a good reply into
+            # something that reads as an error ("ERROR: Unknown Commane" for a
+            # command the drive supports). A genuine error repeats; corruption
+            # does not.
+            if resp.corrupted or resp.empty or resp.is_error:
+                log.debug(
+                    "retrying %r (attempt %d): %s", text, attempt + 1,
+                    "corrupted" if resp.corrupted
+                    else "no reply" if resp.empty else "error reply",
+                )
                 self.transport.flush_input()
                 continue
             break

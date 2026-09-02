@@ -275,13 +275,32 @@ class SerialTransport:
                 lines.append(chunk)
         return lines
 
+    @staticmethod
+    def looks_like_echo(command: str, line: str) -> bool:
+        """True if ``line`` is the drive echoing ``command`` back.
+
+        Tolerates a single mangled character. Motor PWM noise flips bits on the
+        echo as readily as on the reply - ``TANI`` has come back as ``TQNI`` and
+        ``UANI``, ``TVBUS`` as ``\VBUS`` - and an unstripped echo is worse than
+        a dropped one, because it silently becomes the value. A genuine reply
+        differing from the command name in exactly one character is not a case
+        worth worrying about.
+        """
+        want = command.strip().upper()
+        got = line.strip().upper()
+        if want == got:
+            return True
+        if len(want) != len(got) or not want:
+            return False
+        return sum(a != b for a, b in zip(want, got)) == 1
+
     def strip_echo(self, command: str, lines: list[str]) -> list[str]:
         """Drop the leading echo of ``command`` from ``lines``, if present.
 
         Always checked rather than keyed off a configured flag: ECHO is a
         setting on the drive and may not match what we assume.
         """
-        if lines and lines[0].strip().upper() == command.strip().upper():
+        if lines and self.looks_like_echo(command, lines[0]):
             return lines[1:]
         return lines
 
