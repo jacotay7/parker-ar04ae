@@ -408,6 +408,18 @@ anywhere in 5–24 V.
 | Max forward / reverse | 30 V / −30 V |
 | Switching time | 1 ms on, 1 ms off |
 
+**If the supply voltage sags, suspect the current limit.** The enable and reset optos
+draw 3–12 mA *each*, and a bench supply set to a low current limit will drop out of
+constant-voltage into constant-current and sag. Seen here: a supply set to 6 V
+delivering 5.3 V with one opto connected, then 3.3 V once a second was added. Below
+4 V the input is no longer guaranteed to be on — it sits in the indeterminate band
+above the 2 V guaranteed-off level, so it may conduct today and not tomorrow.
+
+Give the supply a current limit of ~100 mA and run at 12–24 V for margin. The drive
+limits the input current internally, so a higher limit does not mean a higher draw.
+Measuring at the supply terminals versus across pins 1 and 21 distinguishes a
+current-limiting supply from a voltage drop in the wiring.
+
 `RESET+` / `RESET−` on pins **18** and **23** are electrically identical — the same
 opto, the same 5–24 V and 3–12 mA. Both `ENABLE+` (pin 1) and `RESET+` (pin 18) are
 **anodes**, so both want feeding from the same positive supply; their cathodes
