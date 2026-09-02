@@ -408,7 +408,18 @@ anywhere in 5–24 V.
 | Max forward / reverse | 30 V / −30 V |
 | Switching time | 1 ms on, 1 ms off |
 
-`RESET+` / `RESET−` on pins **18** and **23** work the same way.
+`RESET+` / `RESET−` on pins **18** and **23** are electrically identical — the same
+opto, the same 5–24 V and 3–12 mA. Both `ENABLE+` (pin 1) and `RESET+` (pin 18) are
+**anodes**, so both want feeding from the same positive supply; their cathodes
+(pins 21 and 23) both want a return to `DGND`. A pair of dangling wires on pins 1 and
+18 is far more likely to be two anodes waiting on a common supply than anything that
+was joined to the other.
+
+Activating the reset input is equivalent to the `RESET` command and to cycling power:
+"The RESET command affects the Aries drive the same as cycling power, or activating
+the hardware Reset inputs (pins 18 and 23 on the DRIVE I/O connector)." A momentary
+button on pin 18 is therefore a drive reset button, and `drive.reset()` does the same
+job over the serial link.
 
 **There is no supply pin on the DRIVE I/O connector.** Table 29 lists only `DGND`
 (pins 2, 17, 19, 20, 22, 24) — no +5 V and no +24 V. The enable current has to come
