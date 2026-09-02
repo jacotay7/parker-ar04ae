@@ -432,13 +432,53 @@ it on the resolver excitation line.
 `AIN+` is pin **14**, `AIN−` is pin **15**. To zero the command offset, short 14 to 15
 (or command 0 V), then call `zero_command_offset()`.
 
+## Faults latch, and they mask each other
+
+Two behaviours worth knowing before chasing any fault:
+
+- **Faults latch.** Correcting the cause does not clear the error. Per the manual,
+  "correct the specified fault, then reset the drive or cycle power to it."
+  `reset()` does this.
+- **Faults mask each other.** `ERROR` reports what currently prevents enabling;
+  clearing one can expose others the drive never got far enough to check. Expect to
+  work through them in rounds rather than seeing the full list up front.
+
+## Motor thermal switch: not fitted
+
+MOTOR FEEDBACK pins 10 and 15 are unwired on this setup, so there is no thermal switch
+to read and `E36` was raised permanently. `DTHERM1` disables thermal-switch faults,
+which is the manual's own recommendation when "no thermal switch is present on the
+motor". Applied, and it survives a reset.
+
+```python
+drive.set("thermal_mode", 1)   # DTHERM1 - disable thermal-switch faults
+drive.reset()                  # clears the latched E36
+drive.set("thermal_mode", 0)   # DTHERM0 - re-enable, if a switch is ever fitted
+```
+
+**What protection this gives up.** The hardware over-temperature trip is gone. Motor
+protection now rests entirely on the drive's **thermal model** — `E35`, computed from
+`DMTIC`, `DMTRWC`, `DMTTCM`, `DMTMAX` and `DMTAMB`. Those parameters describe a
+third-party motor (`DMTR` reports `OTHER=R200D`) and have not been checked against its
+datasheet, so the model's accuracy is unverified. Worth confirming them before running
+the motor hard or unattended.
+
 ## Remaining work
 
-1. **Close the enable interlock across Drive I/O pins 1 and 21.** Until then `DRIVE1`
-   is refused and `ERROR` reports `E46`. This is a wiring change, not a serial one.
-2. Zero the command input: short **AIN+ to AIN−** (or command 0 V), then
+1. **Feedback is not being detected.** `STATUS` reports `NO FEEDBACK DETECTED`,
+   `SFB` reads `0` (unknown), `THALL` reads `0` — all three hall inputs low, which is
+   not a valid state; the manual's Table 51 lists 1–6 as the valid ones. `E37` (bad
+   hall state) and `E38` (feedback failure) follow from this. Earlier in the same
+   session this drive reported `STANDARD ENCODER`, `SFB 2` and `THALL 3`, so the
+   connection has been lost rather than never having worked. Check the MOTOR FEEDBACK
+   connector: hall power on pins **5** (+5 V) and **6** (DGND), halls on **9**, **13**
+   and **14**; encoder power on **4** (+5 V) and **3** (DGND), with A on **8**/**7**,
+   B on **12**/**11**, Z on **1**/**2**.
+2. **Close the enable interlock** across DRIVE I/O pins 1 and 21 — an opto-isolated
+   LED, not a dry contact. See [Wiring](#wiring). Until then `E46` stands.
+3. Zero the command input: short `AIN+` (pin 14) to `AIN-` (pin 15), then
    `zero_command_offset()`. Confirm `check` reports *safe to enable*.
-3. Only then `enable()`, motor unloaded. Nothing has ever been commanded to move.
+4. Only then `enable()`, motor unloaded. Nothing has ever been commanded to move.
 
 ## Still unconfirmed
 
