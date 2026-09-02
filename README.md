@@ -410,6 +410,33 @@ anywhere in 5–24 V.
 
 `RESET+` / `RESET−` on pins **18** and **23** work the same way.
 
+**There is no supply pin on the DRIVE I/O connector.** Table 29 lists only `DGND`
+(pins 2, 17, 19, 20, 22, 24) — no +5 V and no +24 V. The enable current has to come
+from somewhere else.
+
+A common half-finished state is **pin 2 shorted to pin 21**, which ties `ENABLE−` to
+digital ground. That is the *return* half and does nothing on its own; the LED still
+needs current fed into `ENABLE+` on pin 1. To complete it, bring +5 to +24 V through
+your interlock switch to pin 1, with the supply return at `DGND`. No series resistor:
+current is limited internally across the whole 5–24 V range.
+
+```
+  +5..24 V ──[ interlock switch ]── pin 1  (ENABLE+)
+  supply return ───────────────────  pin 21 (ENABLE−) ── pin 2 (DGND)
+```
+
+For a bench bring-up with no 24 V rail to hand, the MOTOR FEEDBACK connector has
++5 VDC on pins **4** and **5** (rated 250 mA; the enable draws 3–12 mA), and its
+`DGND` on pins **3** and **6** is the same ground. That works, but it powers the opto
+from the drive's own supply and so gives up the optical isolation — reasonable on a
+bench, not in a machine.
+
+**Zero the analog command input before you close the interlock.** Per the `DRIVE`
+entry, "if the hardware enable input is closed on power-up, the drive is automatically
+enabled (generates a `DRIVE1` command)" — no serial command involved. With a standing
+command on `AIN+`, the drive would energise and start moving at the next power-up
+before anything could intervene.
+
 Per the manual, if the enable input is closed at power-up the drive enables itself
 (`DRIVE1`) without a serial command.
 
@@ -482,16 +509,16 @@ the manual's Table 51 listing 1–6 as the valid ones — and `E26`, `E37`, `E38
 
 Both items are wiring, not serial.
 
-1. **Close the enable interlock** across DRIVE I/O pins 1 and 21. It is an
-   opto-isolated LED, **not a dry contact** — jumpering the pins together does
-   nothing. See [Wiring](#wiring). Until this is done `E46` stands and `DRIVE1` is
-   refused.
-2. **Zero the analog command input.** It sits at ~0.92 V, which in `DMODE4` scales to
-   about +0.088 rev/s — the motor would creep as soon as it energises. Short `AIN+`
-   (pin **14**) to `AIN-` (pin **15**), or command 0 V from the controller, *then*
-   call `zero_command_offset()`. Doing it with the input floating would bake the
-   floating voltage in as the zero point, and `DCMDZ` has no read-back to recover
-   from that.
+1. **Zero the analog command input** — do this *first*. It sits at ~0.92 V, which in
+   `DMODE4` scales to about +0.088 rev/s. Short `AIN+` (pin **14**) to `AIN-`
+   (pin **15**), or command 0 V from the controller, *then* call
+   `zero_command_offset()`. Doing it with the input floating would bake the floating
+   voltage in as the zero point, and `DCMDZ` has no read-back to recover from that.
+   It has to come first because a closed interlock auto-enables the drive at
+   power-up.
+2. **Complete the enable circuit.** `ENABLE-` (pin 21) is already tied to `DGND`
+   (pin 2); `ENABLE+` (pin 1) still needs 5–24 V through the interlock. See
+   [Wiring](#wiring). Until then `E46` stands and `DRIVE1` is refused.
 
 `python -m parker_ar04ae check` must report *safe to enable* before going further.
 Then `enable()`, motor unloaded. Nothing has ever been commanded to move.
