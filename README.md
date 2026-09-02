@@ -464,6 +464,27 @@ A latching or twist-release mushroom head held in would hold the drive in reset
 indefinitely, which would be an odd thing to build — and would suggest it was meant as
 an E-stop. An E-stop belongs in the `ENABLE+` feed, breaking it, never on `RESET`.
 
+### Diagnosing a stubborn `E46`
+
+`E46` is the live state of the input, not a latch — it survives a reset unchanged, so
+if it is still there the opto is not conducting. In order of likelihood:
+
+- **The supply return is not on `DGND`.** A `pin 21 → pin 2` jumper ties `ENABLE-` to
+  digital ground, but that only completes the internal half. The supply's negative lead
+  still has to reach the DGND net (pins 17, 19, 20, 24). Without it there is no circuit.
+- **`+` is on pin 2 rather than pin 1.** These are adjacent, and pin 2 is `DGND`. If
+  pin 2 is also jumpered to pin 21 and the supply return is on another DGND pin, this
+  puts the supply directly across its own terminals — a dead short, with no current
+  reaching the opto at all. Check this before anything else if the supply is
+  current-limiting.
+- **Polarity.** The opto is a diode; `+` must be on pin 1. Reversed, it will not conduct
+  and looks exactly like open.
+- **Under 4 V** at the pin, or an open interlock switch in series.
+
+The decisive measurement is the **supply current**: 0 mA means open or reversed,
+3–12 mA means conducting (and `E46` should be gone), and a current-limit trip means a
+short.
+
 **Zero the analog command input before you close the interlock.** Per the `DRIVE`
 entry, "if the hardware enable input is closed on power-up, the drive is automatically
 enabled (generates a `DRIVE1` command)" — no serial command involved. With a standing
