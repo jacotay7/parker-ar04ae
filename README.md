@@ -293,7 +293,7 @@ assert port.written == ["TREV"]        # what actually went on the wire
 `DEMO_REPLIES` holds values captured from the real drive.
 
 ```bash
-python -m pytest                          # 146 tests, no hardware needed
+python -m pytest                          # 152 tests, no hardware needed
 python examples/basic_test.py --demo      # the bring-up script against the fake
 python examples/basic_test.py /dev/cu.PL2303G-USBtoUART10
 ```
@@ -617,6 +617,43 @@ shield grounded at one end, routed away from the motor leads, and a ferrite on t
 adapter lead. Note also that tying the enable and reset returns to `DGND` gives up
 those inputs' optical isolation, which does not help.
 
+### Noise can produce wrong numbers that look right
+
+`Response.corrupted` catches a byte that will not decode. It cannot catch a flipped bit
+that lands on another valid character, and those are common here. Two kinds seen:
+
+```
+TANI  -> UANI      command echo mangled; the conversion fails, so a retry catches it
+DRIVE -> 3         "1" read as "3"; parses, but as_bool rejects it, so a retry catches it
+TANI  -> +4.0010   among samples otherwise reading +0.010 - parses perfectly, and
+                   nothing about it is malformed. Undetectable in a single read.
+```
+
+The third kind is the dangerous one. Typed reads retry when a value will not convert,
+but a corrupted *number* converts fine. **Use a median over several reads wherever a
+wrong value would matter:**
+
+```python
+drive.read_median("TANI", samples=5)     # rejects plausible-looking outliers
+```
+
+`will_move_on_enable()` and `commanded_velocity()` do this internally — a single
+corrupted sample there could call an unsafe state safe.
+
+Corruption happens whenever the drive is **enabled**, not only while the shaft turns:
+the PWM switches to hold position too.
+
+### The analog reading shifts between enabled and disabled
+
+`TANI` is not the same in both states — PWM coupling moves it by roughly 0.03–0.07 V.
+So **zero the command in the state you will run in**, which means enabled. Zeroing while
+disabled leaves an offset once the drive energises.
+
+On this drive, after zeroing while enabled, the disabled reading sits at ~+0.040 V,
+right at the deadband edge, while the enabled reading is ~+0.010 V. That is the safe
+direction: `will_move_on_enable()` predicts from the disabled reading, so it slightly
+over-estimates the command rather than under-estimating it.
+
 ### Measuring speed
 
 `TVELA` is unreliable at low speed — running at ~1 RPM its standard deviation was
@@ -785,6 +822,28 @@ the drive will tell you what it is set to. The only visible evidence is that `TA
 reads ~0 with the input shorted. If the zero ever needs restoring, `DCMDZ=0.2` is the
 value; `DCMDZ=0` returns it to the factory default and would put ~0.2 V of standing
 command back.
+
+## Enabled and holding
+
+The drive now runs with **no errors at all** — `E46` cleared once the supply was wired
+`+` to pin 1 and `-` to pin 21.
+
+```
+enabled   True
+errors    []
+holding   span 4137 counts over 12s = 1.58 deg
+```
+
+**The whine you hear while holding is the servo regulating.** With the `AIN+`/`AIN-`
+short in place the command is ~0 and the drive actively holds position; remove the
+short and `AIN` floats back to ~1 V, giving a real velocity command, which is why it
+turns and the noise changes. The short, or a real 0 V source, has to stay.
+
+Some hunting is visible in that hold: three direction reversals in six samples, and
+torque swinging across roughly ±2 A against a `DMTLIM` of 4 A, for an unloaded shaft.
+`SGI` is 0, so there is no integral term to settle it. If the noise or the dither
+matters, that is the thing to tune — see Chapter 5 and Appendix D of the manual. It is
+stable and fault-free as it stands.
 
 ## Remaining work
 

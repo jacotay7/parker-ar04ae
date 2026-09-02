@@ -638,3 +638,50 @@ def test_unreadable_scale_is_treated_as_unsafe(port):
     will_move, why = d.will_move_on_enable()
     assert will_move is True
     assert "could not be read" in why
+
+
+# -- undetectable numeric corruption ---------------------------------------
+def test_read_median_rejects_plausible_outliers(port):
+    # A flipped digit still parses: 0.001 read as 4.001 or 0.901.
+    seq = iter(["0.001", "4.001", "0.001", "0.901", "0.001"])
+    port.replies["TANI"] = lambda _c: next(seq)
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    assert d.read_median("TANI", samples=5) == pytest.approx(0.001)
+
+
+def test_read_median_survives_some_unparsable_reads(port):
+    seq = iter(["UANI", "0.002", "0.002", "xxx", "0.002"])
+    port.replies["TANI"] = lambda _c: next(seq)
+    d = AriesDrive(byte_port=port, timeout=0.2, retries=0).connect()
+    assert d.read_median("TANI", samples=5) == pytest.approx(0.002)
+
+
+def test_read_median_raises_when_nothing_parses(port):
+    port.replies["TANI"] = "garbage"
+    d = AriesDrive(byte_port=port, timeout=0.2, retries=0).connect()
+    with pytest.raises(ValueError) as exc:
+        d.read_median("TANI", samples=3)
+    assert "no parsable value" in str(exc.value)
+
+
+def test_safety_check_is_not_fooled_by_one_bad_sample(port):
+    # Four honest ~0 V reads and one corrupted 4.0 V: must still read safe.
+    seq = iter(["0.001", "0.001", "4.001", "0.001", "0.001"])
+    port.replies["TANI"] = lambda _c: next(seq)
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    assert d.will_move_on_enable()[0] is False
+
+
+def test_safety_check_is_not_fooled_into_calling_it_safe(port):
+    # The dangerous direction: a standing command with one clean-looking zero.
+    seq = iter(["0.920", "0.920", "0.001", "0.920", "0.920"])
+    port.replies["TANI"] = lambda _c: next(seq)
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    assert d.will_move_on_enable()[0] is True
+
+
+def test_typed_read_retries_a_bit_flipped_command_echo(port):
+    seq = iter(["UANI", "0.123"])
+    port.replies["TANI"] = lambda _c: next(seq)
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    assert d.analog_input() == pytest.approx(0.123)

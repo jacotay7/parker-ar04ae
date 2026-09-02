@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import statistics
 import time
 from dataclasses import dataclass
 from typing import Optional, Union
@@ -344,6 +345,55 @@ class AriesDrive:
             raise TimeoutError_(resp.command, self.transport.timeout)
         return resp
 
+    def _typed(self, command: str, converter, retries: Optional[int] = None, **kw):
+        """Read ``command`` and convert it, re-reading if the value will not parse.
+
+        :attr:`Response.corrupted` only catches noise that produces an
+        undecodable byte. A flipped bit landing on another valid ASCII character
+        is invisible - ``TANI`` came back as ``UANI`` once - and shows up only
+        when the conversion fails. Since the drive's PWM switches whenever it is
+        enabled, that happens while merely holding position, not just while
+        moving.
+        """
+        attempts = 1 + (self.retries if retries is None else retries)
+        last: Optional[Exception] = None
+        for _ in range(attempts):
+            resp = self.query(command, **kw)
+            try:
+                return converter(resp)
+            except (ValueError, IndexError) as exc:
+                last = exc
+                self.transport.flush_input()
+        raise ValueError(
+            f"{command}: no parsable value after {attempts} attempts ({last})"
+        )
+
+    def read_median(
+        self, command: str, converter=None, samples: int = 5, **kw
+    ) -> float:
+        """Read ``command`` several times and return the median.
+
+        Line noise can flip a digit into another valid digit, so a reading may
+        parse cleanly and still be wrong - ``TANI`` returned ``+4.0010`` and
+        ``+0.9010`` among samples that were otherwise ``+0.01``. Neither
+        :attr:`Response.corrupted` nor a failed conversion catches that, because
+        nothing about the value is malformed.
+
+        A median over several reads rejects those outliers, so use this rather
+        than a single read wherever a wrong number would matter - deciding
+        whether it is safe to energise the drive, above all.
+        """
+        converter = converter or Response.as_float
+        values = []
+        for _ in range(samples):
+            try:
+                values.append(self._typed(command, converter, **kw))
+            except ValueError:
+                continue
+        if not values:
+            raise ValueError(f"{command}: no parsable value in {samples} reads")
+        return statistics.median(values)
+
     def ping(self) -> bool:
         """True if the drive answers at all. Never raises."""
         try:
@@ -459,49 +509,49 @@ class AriesDrive:
 
     def is_enabled(self) -> bool:
         """Current enable state (``DRIVE``)."""
-        return self.query("DRIVE").as_bool()
+        return self._typed("DRIVE", Response.as_bool)
 
     # -- feedback ----------------------------------------------------------
     def position(self) -> int:
         """Encoder position in counts (``TPE``)."""
-        return self.query("TPE").as_int()
+        return self._typed("TPE", Response.as_int)
 
     def commanded_position(self) -> int:
         """Commanded position in counts (``TPC``)."""
-        return self.query("TPC").as_int()
+        return self._typed("TPC", Response.as_int)
 
     def position_error(self) -> int:
         """Following error in counts (``TPER``)."""
-        return self.query("TPER").as_int()
+        return self._typed("TPER", Response.as_int)
 
     def velocity(self) -> float:
         """Commanded velocity (``TVEL``)."""
-        return self.query("TVEL").as_float()
+        return self._typed("TVEL", Response.as_float)
 
     def actual_velocity(self) -> float:
         """Actual velocity (``TVELA``)."""
-        return self.query("TVELA").as_float()
+        return self._typed("TVELA", Response.as_float)
 
     def torque(self) -> float:
         """Torque (``TTRQ``)."""
-        return self.query("TTRQ").as_float()
+        return self._typed("TTRQ", Response.as_float)
 
     def analog_input(self) -> float:
         """Analog command input in volts (``TANI``)."""
-        return self.query("TANI").as_float()
+        return self._typed("TANI", Response.as_float)
 
     # -- power -------------------------------------------------------------
     def bus_voltage(self) -> float:
         """DC bus voltage (``TVBUS``)."""
-        return self.query("TVBUS").as_float()
+        return self._typed("TVBUS", Response.as_float)
 
     def drive_temperature(self) -> float:
         """Drive temperature in degrees C (``TDTEMP``)."""
-        return self.query("TDTEMP").as_float()
+        return self._typed("TDTEMP", Response.as_float)
 
     def motor_temperature(self) -> float:
         """Motor temperature in degrees C (``TMTEMP``)."""
-        return self.query("TMTEMP").as_float()
+        return self._typed("TMTEMP", Response.as_float)
 
     # -- enable ------------------------------------------------------------
     def enable(self, verify: bool = True) -> bool:
@@ -664,7 +714,7 @@ class AriesDrive:
     # -- decoded configuration --------------------------------------------
     def drive_mode(self) -> int:
         """Control mode as an integer (``DMODE``)."""
-        return self.query("DMODE").as_int()
+        return self._typed("DMODE", Response.as_int)
 
     def drive_mode_name(self) -> str:
         """Control mode as text, e.g. ``Velocity Control`` for mode 4."""
@@ -673,7 +723,7 @@ class AriesDrive:
 
     def feedback_type(self) -> str:
         """Feedback source as text (``SFB``)."""
-        return FEEDBACK_TYPES.get(self.query("SFB").as_int(), "unknown")
+        return FEEDBACK_TYPES.get(self._typed("SFB", Response.as_int), "unknown")
 
     # -- analog command input ---------------------------------------------
     def establish_position(self, counts: int = 0) -> Response:
@@ -736,7 +786,10 @@ class AriesDrive:
         # TANI reports the voltage *after* the DCMDZ zero point is applied, so
         # the effective command is TANI itself. DCMDZ is deliberately not read:
         # sending it bare re-zeros the input (see ACTION_COMMANDS).
-        volts = self.analog_input()
+        #
+        # Median rather than a single read: a digit flipped by line noise still
+        # parses, and one bad sample here would call an unsafe state safe.
+        volts = self.read_median("TANI")
         deadband = self._optional_float("ANICDB", 0.04)
         name = DRIVE_MODES[mode][0]
 
@@ -782,7 +835,7 @@ class AriesDrive:
         :meth:`measure_velocity`, and the two differ - see the README on
         open-loop droop.
         """
-        volts = self.analog_input()
+        volts = self.read_median("TANI")
         deadband = self._optional_float("ANICDB", 0.04)
         scale = self._optional_float("DMVSCL", 0.0)
         if abs(volts) <= deadband:
@@ -807,7 +860,7 @@ class AriesDrive:
         too few usable samples were collected.
         """
         if eres is None:
-            eres = self.query("ERES").as_int()
+            eres = self._typed("ERES", Response.as_int)
 
         samples: list[tuple[float, int]] = []
         last: Optional[int] = None
