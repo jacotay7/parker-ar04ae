@@ -417,3 +417,65 @@ def test_overlong_command_is_rejected(drive):
 
 def test_command_at_the_limit_is_allowed(drive):
     drive.raw("D" * 32, strict=False)  # no raise
+
+
+# -- noise tolerance -------------------------------------------------------
+def test_corrupted_reply_is_detected():
+    from parker_ar04ae.response import Response
+
+    assert Response("TVELA", ["0.0�2"]).corrupted
+    assert not Response("TVELA", ["0.082"]).corrupted
+
+
+def test_reads_are_retried_after_corruption(port):
+    calls = {"n": 0}
+
+    def flaky(_cmd):
+        calls["n"] += 1
+        return "0.0�2" if calls["n"] == 1 else "0.082"
+
+    port.replies["TVELA"] = flaky
+    d = AriesDrive(byte_port=port, timeout=0.3).connect()
+    assert d.actual_velocity() == pytest.approx(0.082)
+    assert calls["n"] == 2
+
+
+def test_reads_are_retried_when_silent(port):
+    calls = {"n": 0}
+
+    def flaky(_cmd):
+        calls["n"] += 1
+        return "" if calls["n"] == 1 else "163.1"
+
+    port.replies["TVBUS"] = flaky
+    port.echo = False
+    d = AriesDrive(byte_port=port, timeout=0.2).connect()
+    assert d.bus_voltage() == pytest.approx(163.1)
+
+
+def test_retries_give_up_and_return_the_last_reply(port):
+    port.replies["TVELA"] = "0.0�2"
+    d = AriesDrive(byte_port=port, timeout=0.2, retries=2).connect()
+    resp = d.raw("TVELA", strict=False)
+    assert resp.corrupted
+    assert port.written.count("TVELA") == 3  # 1 attempt + 2 retries
+
+
+def test_writes_are_never_retried(port):
+    # Re-sending a write could apply it twice.
+    d = AriesDrive(byte_port=port, timeout=0.2, retries=2).connect()
+    d.raw("SGI", 0.1)
+    assert port.written.count("SGI0.1") == 1
+
+
+def test_an_error_reply_is_not_retried(port):
+    d = AriesDrive(byte_port=port, timeout=0.2, retries=2).connect()
+    d.raw("NOSUCHCMD", strict=False)
+    assert port.written.count("NOSUCHCMD") == 1
+
+
+def test_retries_can_be_disabled_per_call(port):
+    port.replies["TVELA"] = "0.0�2"
+    d = AriesDrive(byte_port=port, timeout=0.2).connect()
+    d.raw("TVELA", strict=False, retries=0)
+    assert port.written.count("TVELA") == 1

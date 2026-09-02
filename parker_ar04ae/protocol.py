@@ -36,6 +36,12 @@ EOL = "\r"
 #: Factory default line settings.
 DEFAULT_BAUD = 9600
 
+#: What ``bytes.decode(errors="replace")`` substitutes for a byte that is not
+#: valid in the wire encoding. Its presence in a reply means the link corrupted
+#: the data - which happens on this drive once the motor is running and PWM
+#: noise couples into the RS-232 line.
+REPLACEMENT_CHAR = "\ufffd"
+
 #: Seconds of silence that mark the end of a write's echo, since writes send no
 #: ENQ to stop on.
 WRITE_QUIET = 0.08

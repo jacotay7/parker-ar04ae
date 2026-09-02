@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .protocol import ERROR_PREFIX
+from .protocol import ERROR_PREFIX, REPLACEMENT_CHAR
 
 
 def looks_like_error(line: str, prefix: str = ERROR_PREFIX) -> bool:
@@ -48,6 +48,18 @@ class Response:
             if looks_like_error(ln, self.error_prefix):
                 return ln.strip()[len(self.error_prefix):].strip()
         return None
+
+    @property
+    def corrupted(self) -> bool:
+        """True if the reply contains bytes the wire encoding could not decode.
+
+        Motor PWM noise couples into the RS-232 line once the drive is running,
+        mangling replies in both directions - the command echo included. A
+        replacement character is proof the reply is unreliable; note that
+        corruption which happens to land on another valid ASCII character
+        cannot be detected this way.
+        """
+        return any(REPLACEMENT_CHAR in line for line in self.lines)
 
     @property
     def value(self) -> str:

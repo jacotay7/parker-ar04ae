@@ -293,7 +293,7 @@ assert port.written == ["TREV"]        # what actually went on the wire
 `DEMO_REPLIES` holds values captured from the real drive.
 
 ```bash
-python -m pytest                          # 119 tests, no hardware needed
+python -m pytest                          # 126 tests, no hardware needed
 python examples/basic_test.py --demo      # the bring-up script against the fake
 python examples/basic_test.py /dev/cu.PL2303G-USBtoUART10
 ```
@@ -557,23 +557,63 @@ drive.reset()   # re-runs feedback detection and clears the latched faults
 After that: `Feedback Type: STANDARD ENCODER`, `SFB 2`, `THALL 5` — a valid hall state,
 the manual's Table 51 listing 1–6 as the valid ones — and `E26`, `E37`, `E38` all gone.
 
+## First enable, and what it showed
+
+With the supply wired to `ENABLE+`, `E46` cleared and the drive enabled. The motor
+turned — the first motion in this project — and `DRIVE0` stopped it cleanly.
+
+`will_move_on_enable()` predicted **+0.088 rev/s** from `TANI`, `ANICDB` and `DMVSCL`.
+Measured `TVELA` came back **0.072–0.087 rev/s**. The manual's formula holds against
+real motion.
+
+### The serial link corrupts once the motor runs
+
+Telemetry captured during that run:
+
+```
+0.0?2      435494?     0?432
+T?ELA      4516639     0.677
+TVELPC!????jRjR?       TVRQ
+```
+
+Motor PWM noise couples into the RS-232 line and mangles replies **in both
+directions** — the command echo included. The library reported those as data.
+
+`Response.corrupted` now detects it: a byte that will not decode as ASCII becomes a
+replacement character, which is proof the reply is unreliable. Reads are retried
+automatically (`retries=2` by default). **Only reads** — they are idempotent, whereas
+re-sending a write could apply it twice.
+
+```python
+AriesDrive(port, retries=2)      # default
+drive.raw("TVELA", retries=0)    # opt out for one call
+```
+
+This is mitigation, not a cure. Corruption that happens to land on another valid ASCII
+character is undetectable — `TVRQ` above is `TTRQ` with a flipped bit and carries no
+replacement character. Worth attacking at the source: a shielded serial cable with the
+shield grounded at one end, routed away from the motor leads, and a ferrite on the USB
+adapter lead. Note also that tying the enable and reset returns to `DGND` gives up
+those inputs' optical isolation, which does not help.
+
+### Unexplained: position and velocity do not agree
+
+Over that run `TPE` advanced about 4.9 million counts. At `ERES` 944000 counts/rev that
+is ~5.2 revolutions, which over roughly nine seconds implies ~0.58 rev/s — far above
+the 0.072–0.087 rev/s `TVELA` reported at the same moments. The link was corrupting
+and the sampling interval was irregular, so neither figure is trustworthy from that
+run. Worth re-measuring over a clean link before drawing any conclusion about units or
+scaling.
+
 ## Remaining work
 
-Both items are wiring, not serial.
-
-1. **Zero the analog command input** — do this *first*. It sits at ~0.92 V, which in
-   `DMODE4` scales to about +0.088 rev/s. Short `AIN+` (pin **14**) to `AIN-`
-   (pin **15**), or command 0 V from the controller, *then* call
-   `zero_command_offset()`. Doing it with the input floating would bake the floating
-   voltage in as the zero point, and `DCMDZ` has no read-back to recover from that.
-   It has to come first because a closed interlock auto-enables the drive at
-   power-up.
-2. **Complete the enable circuit.** `ENABLE-` (pin 21) is already tied to `DGND`
-   (pin 2); `ENABLE+` (pin 1) still needs 5–24 V through the interlock. See
-   [Wiring](#wiring). Until then `E46` stands and `DRIVE1` is refused.
-
-`python -m parker_ar04ae check` must report *safe to enable* before going further.
-Then `enable()`, motor unloaded. Nothing has ever been commanded to move.
+1. **Zero the analog command input.** It still stands at ~0.92 V, so the motor starts
+   turning the moment the drive energises — and a closed enable input auto-enables at
+   power-up. Short `AIN+` (pin **14**) to `AIN-` (pin **15**), then call
+   `zero_command_offset()`.
+2. Re-measure position against velocity on a quiet link, to settle the discrepancy
+   above.
+3. Decode the `TAS` bits, which remain undocumented in Rev G.
 
 ## Still unconfirmed
 

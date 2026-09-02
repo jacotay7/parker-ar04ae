@@ -198,6 +198,11 @@ class AriesDrive:
     strict:
         Raise :class:`CommandError` when the drive reports an error. Set
         ``False`` to get the error back in the :class:`Response` instead.
+    retries:
+        How many times to re-send a *read* whose reply came back empty or
+        corrupted. Motor PWM noise mangles the serial line once the drive is
+        running. Only reads are retried - they are idempotent, whereas
+        re-sending a write could apply it twice.
     transport:
         Supply a pre-built transport (or a fake one) instead of a port path.
     """
@@ -209,6 +214,7 @@ class AriesDrive:
         address: Optional[int] = None,
         timeout: float = 1.0,
         strict: bool = True,
+        retries: int = 2,
         transport: Optional[SerialTransport] = None,
         byte_port: Optional[BytePort] = None,
         error_prefix: str = ERROR_PREFIX,
@@ -222,6 +228,7 @@ class AriesDrive:
         self.transport = transport
         self.address = address
         self.strict = strict
+        self.retries = retries
         self.error_prefix = error_prefix
 
     # -- lifecycle ---------------------------------------------------------
@@ -257,6 +264,7 @@ class AriesDrive:
         timeout: Optional[float] = None,
         strict: Optional[bool] = None,
         expect_reply: Optional[bool] = None,
+        retries: Optional[int] = None,
     ) -> Response:
         """Send ``command`` verbatim and return the parsed :class:`Response`.
 
@@ -279,8 +287,23 @@ class AriesDrive:
                 f"command {text!r} is {len(text)} characters; the drive's line "
                 f"limit is {MAX_COMMAND_LENGTH}"
             )
-        lines = self.transport.exchange(text, timeout=timeout, expect_reply=expect_reply)
-        resp = Response(command=text, lines=lines, error_prefix=self.error_prefix)
+        attempts = 1 + (self.retries if retries is None else retries)
+        for attempt in range(attempts):
+            lines = self.transport.exchange(
+                text, timeout=timeout, expect_reply=expect_reply
+            )
+            resp = Response(command=text, lines=lines, error_prefix=self.error_prefix)
+            # Only reads are retried: they are idempotent, whereas re-sending a
+            # write could apply it twice.
+            if not expect_reply or attempt == attempts - 1:
+                break
+            if resp.corrupted or resp.empty:
+                log.debug("retrying %r (attempt %d): %s", text, attempt + 1,
+                          "corrupted" if resp.corrupted else "no reply")
+                self.transport.flush_input()
+                continue
+            break
+
         strict = self.strict if strict is None else strict
         if strict and resp.is_error:
             raise CommandError(text, resp.error_message or "unknown error", resp.text)
@@ -296,7 +319,7 @@ class AriesDrive:
     def ping(self) -> bool:
         """True if the drive answers at all. Never raises."""
         try:
-            return not self.raw("TREV", strict=False).empty
+            return not self.raw("TREV", strict=False, retries=0).empty
         except (ConnectionError_, TimeoutError_, OSError):
             return False
 

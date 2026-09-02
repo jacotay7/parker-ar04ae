@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Callable, Mapping, Union
 
-from .protocol import DC1, ENQ
+from .protocol import DC1, ENQ, REPLACEMENT_CHAR
 from .transport import BytePort
 
 Reply = Union[str, list, Callable[[str], str], None]
@@ -39,6 +39,8 @@ class FakePort(BytePort):
         gets ``default``.
     echo:
         Echo the received command back first, as the drive does with ``ECHO1``.
+        A ``\ufffd`` anywhere in a reply is emitted as an undecodable byte, so
+        scripted replies can model the line noise the motor produces.
     enq:
         Terminate each *query* reply with the ENQ prompt, as the drive does.
         Set ``False`` to model a unit that never sends one.
@@ -143,7 +145,16 @@ class FakePort(BytePort):
             self._emit(ENQ)
 
     def _emit(self, line: str) -> None:
-        self._rx += (line + self.eol).encode("ascii", errors="replace")
+        # A replacement character in a scripted reply stands for line noise, so
+        # put a byte on the wire that really is undecodable as ASCII. Encoding
+        # it normally would yield "?", which decodes cleanly and would not
+        # exercise the corruption path at all.
+        data = bytearray()
+        for ch in line + self.eol:
+            data += b"\xff" if ch == REPLACEMENT_CHAR else ch.encode(
+                "ascii", errors="replace"
+            )
+        self._rx += data
 
     def __repr__(self) -> str:
         return f"<FakePort {len(self.replies)} replies, {len(self.written)} received>"
