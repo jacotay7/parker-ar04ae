@@ -216,47 +216,62 @@ values off a drive that has not finished rebooting.
 
 ## Command set
 
-84 parameters in `PARAMETERS`, plus the text reports. Each is tagged by source:
-**hw** = confirmed against an AR-04AE running Aries OS 3.30, **doc** = taken from the
-Rev G manual in [manuals/](manuals/) but not yet seen on hardware. `info` marks the
-manual-only ones, and `snapshot()` reports anything the firmware rejects as `None`
-rather than failing.
+84 parameters in `PARAMETERS`, plus the text reports. **All 84 read back on Aries OS
+3.30** — every command taken from the Rev G manual was confirmed present on hardware.
 
 | Group | Commands |
 | --- | --- |
 | identity | `TREV` `DMTR` `ADDR` `ECHO` `ERRLVL` |
 | status | `DRIVE` `TAS` `TIN` `TOUT` |
-| feedback | `TPE` `TPC` `TPER` `TVEL` `TVELA` `TTRQ` `TANI` · *doc:* `TVER` `TTRQA` `TCI` `THALL` |
-| power | `TVBUS` `TDTEMP` `TMTEMP` · *doc:* `TDICNT` `TDIMAX` `TSSPD` |
-| runtime | *doc:* `TDHRS` `TDMIN` `TDSEC` |
-| drive config | `DMODE` `ERES` `DRES` `SFB` `DIFOLD` `DTHERM` `DPWM` · *doc:* `CMDDIR` `DMPSCL` `IANI` `ANICDB` `FLTDSB` `FLTSTP` `ENCFLT` `ENCOFF` `ENCPOL` `SHALL` `OHALL` `P163` |
-| motor config | `DMTIC` `DMTLIM` `DMTW` `DMTKE` `DMTRES` `DMTIND` `DPOLE` `DMTJ` `DMTD` `DMEPIT` · *doc:* `DMTIP` `DMTINF` `DMTSCL` `DMVSCL` `DMVLIM` `DMTAMB` `DMTMAX` `DMTRWC` `DMTTCM` `DMTTCW` `DMTSWT` `DMTICD` |
-| servo gains | `SGP` `SGI` `SGV` `SGVF` `SGAF` `SMPER` · *doc:* `SGILIM` `SMVER` `SMAV` `PGAIN` `IGAIN` `DIBW` `IAUTO` `LJRAT` |
+| feedback | `TPE` `TPC` `TPER` `TVEL` `TVELA` `TVER` `TTRQ` `TTRQA` `TCI` `TANI` `THALL` |
+| power | `TVBUS` `TDTEMP` `TMTEMP` `TDICNT` `TDIMAX` `TSSPD` |
+| runtime | `TDHRS` `TDMIN` `TDSEC` |
+| drive config | `DMODE` `ERES` `DRES` `SFB` `DIFOLD` `DTHERM` `DPWM` `CMDDIR` `DMPSCL` `IANI` `ANICDB` `FLTDSB` `FLTSTP` `ENCFLT` `ENCOFF` `ENCPOL` `SHALL` `OHALL` `P163` |
+| motor config | `DMTIC` `DMTLIM` `DMTIP` `DMTW` `DMTKE` `DMTRES` `DMTIND` `DMTINF` `DPOLE` `DMTJ` `DMTD` `DMEPIT` `DMTSCL` `DMVSCL` `DMVLIM` `DMTAMB` `DMTMAX` `DMTRWC` `DMTTCM` `DMTTCW` `DMTSWT` `DMTICD` |
+| servo gains | `SGP` `SGI` `SGV` `SGVF` `SGAF` `SGILIM` `SMPER` `SMVER` `SMAV` `PGAIN` `IGAIN` `DIBW` `IAUTO` `LJRAT` |
 
-Text reports: `ERROR`, `STATUS`, `TERRLG`, `CERRLG`, `CONFIG`.
+Text reports, all confirmed: `ERROR`, `STATUS`, `TERRLG`, `CERRLG`, `CONFIG`.
 
 ```python
-drive.active_errors()   # [('E46', 'No hardware enable - ... pins 1 and 21 - is open')]
+drive.active_errors()   # [('E39', 'Drive disabled...'), ('E46', 'No hardware enable...')]
 drive.status()          # STATUS full-text report, as lines
 drive.error_log()       # TERRLG - last ten errors or power cycles
 drive.drive_mode_name() # 'Velocity Control'
-drive.feedback_type()   # 'smart encoder (OS 2.10+)'
+drive.feedback_type()   # 'standard encoder (OS 2.10+)'
 ```
+
+### Commands that act when sent bare
+
+Most commands report a value when sent with no argument. A few **do something
+instead**, and reading them as if they were parameters changes the drive:
+
+`ALIGN` · `CERRLG` · `DCMDZ` · `ESTORE` · `PSET` · `RESET` · `RFS`
+
+`get()` and `snapshot()` refuse these; see `ACTION_COMMANDS` in
+[reference.py](parker_ar04ae/reference.py).
+
+`DCMDZ` is the trap. Its Response field in the manual is `N/A` — there is **no
+read-back form** — and sending it bare re-zeros the analog command input against
+whatever voltage happens to be present. There is then no way to recover the previous
+zero point from the drive. Note the current `TANI` reading before calling
+`zero_command_offset()` if you might need to put it back.
+
+`TANI` reports the voltage *after* the zero point is applied, which is the only
+visible evidence of what `DCMDZ` is set to.
 
 ### Firmware is newer than the manual
 
-Rev G documents Aries OS 1.0–3.10; this drive reports **OS 3.30**. That cuts both ways:
-`TAS`, `TIN` and `ERRLVL` work on the drive but appear **nowhere** in Rev G, while
-`TSTAT` — which I originally guessed at — does not exist. The manual's full-text
-report is `STATUS`. Treat [reference.py](parker_ar04ae/reference.py) as the manual's
-account, not a guarantee about a given unit.
+Rev G documents Aries OS 1.0–3.10; this drive reports **OS 3.30**. `TAS`, `TIN` and
+`ERRLVL` work on the drive but appear **nowhere** in Rev G, while `TSTAT` — which I
+originally guessed at — does not exist; the full-text report is `STATUS`. Treat
+[reference.py](parker_ar04ae/reference.py) as the manual's account, not a guarantee
+about a given unit.
 
 ### Command syntax
 
 - Line limit is **32 characters**, enforced by `raw()`.
 - Bare command reads; appending a value writes (`SGP2.0`).
-- `DCMDZ` is the exception — it uses `=` (`DCMDZ=0.5`), so it has its own method,
-  `zero_command_offset()`.
+- `DCMDZ` uses `=` (`DCMDZ=0.5`), hence its own method.
 - On **RS-485** every response is prefixed `*` and units need an address
   (`2_TREV`); on RS-232 replies are bare. Set `address=` for a multi-drop network.
 
@@ -278,7 +293,7 @@ assert port.written == ["TREV"]        # what actually went on the wire
 `DEMO_REPLIES` holds values captured from the real drive.
 
 ```bash
-python -m pytest                          # 112 tests, no hardware needed
+python -m pytest                          # 119 tests, no hardware needed
 python examples/basic_test.py --demo      # the bring-up script against the fake
 python examples/basic_test.py /dev/cu.PL2303G-USBtoUART10
 ```
@@ -341,26 +356,39 @@ takes the present input voltage as the new zero.
 link. It is **not an interlock** and cannot see what the controller does next. Nothing
 here substitutes for the hardware enable or an E-stop.
 
-## Next session at the drive
+## State of this drive
 
-In order:
+From `status` and `info` on the bench unit:
 
-1. `python -m parker_ar04ae info --all` — confirms which *doc* commands exist on
-   OS 3.30. Anything showing `-` is absent.
-2. `python -m parker_ar04ae status --log` — first look at `STATUS` and `TERRLG`.
-   Neither has run against hardware.
-3. `python -m parker_ar04ae errors` — expected to report `E46`, confirming the
-   enable-input diagnosis.
-4. Close the enable interlock across Drive I/O pins 1 and 21.
-5. `python -m parker_ar04ae check` — must say *safe to enable* before going further.
-   If not, zero the command input first.
-6. Only then `enable()`, with the motor still free of any load.
+```
+OS Revision: 3.30          Power Level: 400W        Bus Voltage: 163V
+Motor Name: OTHER=R200D    Motor Type: ROTARY       Feedback: STANDARD ENCODER
+Feedback Resolution: 944000                         Operating hours: 1642
+```
+
+Two settings worth knowing:
+
+- `FLTSTP` is **5.000 V**, not the 10 V default — a command voltage above 5 V when the
+  drive is enabled will fault it. The present 0.94 V is well under.
+- `DMVSCL` is **1.000**, so full-scale 10 V is only 1 rev/s. That is why the standing
+  command works out to a slow creep rather than a runaway.
+
+The error log holds ten power cycles and no faults.
+
+## Remaining work
+
+1. **Close the enable interlock across Drive I/O pins 1 and 21.** Until then `DRIVE1`
+   is refused and `ERROR` reports `E46`. This is a wiring change, not a serial one.
+2. Zero the command input: short **AIN+ to AIN−** (or command 0 V), then
+   `zero_command_offset()`. Confirm `check` reports *safe to enable*.
+3. Only then `enable()`, motor unloaded. Nothing has ever been commanded to move.
 
 ## Still unconfirmed
 
-- Every **doc**-tagged command above, and all the text reports — read from the manual,
-  not yet seen on this firmware.
-- **Motion.** Nothing has been commanded to move; the drive has never enabled.
-- **Write coverage.** `ERRLVL` and `SGI` were written and restored. The mechanism is
-  identical for the rest, but some parameters may be rejected while enabled, and
-  several (`DRES`, `IANI`) are documented as requiring a reset to take effect.
+- **Motion.** The drive has never enabled, so nothing has been commanded to move.
+- **Write coverage.** `ERRLVL`, `SGI` and `DCMDZ` were written and restored. The
+  mechanism is identical for the rest, but some parameters may be rejected while
+  enabled, and several (`DRES`, `IANI`) are documented as requiring a reset to take
+  effect.
+- **`TAS` bit meanings.** The axis status word reads back but is undocumented in
+  Rev G, so individual bits are not decoded.

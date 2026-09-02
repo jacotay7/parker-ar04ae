@@ -31,6 +31,7 @@ from .errors import (
 )
 from .protocol import DEFAULT_BAUD, ERROR_PREFIX
 from .reference import (
+    ACTION_COMMANDS,
     ANALOG_COMMAND_MODES,
     DRIVE_MODES,
     ERROR_CODES,
@@ -64,9 +65,10 @@ RESET_SETTLE = 0.5
 #:
 #: ``source`` is ``"hw"`` for commands confirmed against an AR-04AE running
 #: Aries OS 3.30, and ``"doc"`` for ones taken from the Rev G manual but not yet
-#: seen on hardware. A ``"doc"`` entry may not exist on your firmware - the
-#: manual covers OS 1.0-3.10 - so :meth:`snapshot` reports unsupported ones as
-#: ``None`` rather than failing.
+#: seen on hardware. All 84 below currently read back on OS 3.30; the tag is
+#: kept so anything added later from the manual alone is marked as such.
+#: :meth:`snapshot` reports a parameter the firmware rejects as ``None`` rather
+#: than failing, so a "doc" entry is never fatal.
 PARAMETERS: dict[str, dict[str, tuple[str, str, str]]] = {
     "identity": {
         "revision": ("TREV", "firmware revision", "hw"),
@@ -87,25 +89,25 @@ PARAMETERS: dict[str, dict[str, tuple[str, str, str]]] = {
         "position_error": ("TPER", "following error, counts", "hw"),
         "velocity": ("TVEL", "commanded velocity", "hw"),
         "actual_velocity": ("TVELA", "actual velocity", "hw"),
-        "velocity_error": ("TVER", "commanded velocity error", "doc"),
+        "velocity_error": ("TVER", "commanded velocity error", "hw"),
         "torque": ("TTRQ", "commanded torque/force", "hw"),
-        "actual_torque": ("TTRQA", "actual torque/force", "doc"),
-        "commanded_current": ("TCI", "commanded current", "doc"),
+        "actual_torque": ("TTRQA", "actual torque/force", "hw"),
+        "commanded_current": ("TCI", "commanded current", "hw"),
         "analog_input": ("TANI", "analog command input, volts", "hw"),
-        "hall": ("THALL", "hall sensor values", "doc"),
+        "hall": ("THALL", "hall sensor values", "hw"),
     },
     "power": {
         "bus_voltage": ("TVBUS", "DC bus voltage", "hw"),
         "drive_temperature": ("TDTEMP", "drive temperature, degC", "hw"),
         "motor_temperature": ("TMTEMP", "motor temperature, degC", "hw"),
-        "continuous_rating": ("TDICNT", "continuous current rating", "doc"),
-        "max_rating": ("TDIMAX", "maximum current rating", "doc"),
-        "pwm_period": ("TSSPD", "PWM update period", "doc"),
+        "continuous_rating": ("TDICNT", "continuous current rating", "hw"),
+        "max_rating": ("TDIMAX", "maximum current rating", "hw"),
+        "pwm_period": ("TSSPD", "PWM update period", "hw"),
     },
     "runtime": {
-        "operating_hours": ("TDHRS", "operating hours", "doc"),
-        "operating_minutes": ("TDMIN", "operating minutes", "doc"),
-        "operating_ms": ("TDSEC", "operating milliseconds", "doc"),
+        "operating_hours": ("TDHRS", "operating hours", "hw"),
+        "operating_minutes": ("TDMIN", "operating minutes", "hw"),
+        "operating_ms": ("TDSEC", "operating milliseconds", "hw"),
     },
     "drive_config": {
         "drive_mode": ("DMODE", "control mode, see DRIVE_MODES", "hw"),
@@ -115,42 +117,42 @@ PARAMETERS: dict[str, dict[str, tuple[str, str, str]]] = {
         "current_foldback": ("DIFOLD", "current foldback enabled", "hw"),
         "thermal_mode": ("DTHERM", "motor thermal switch checking", "hw"),
         "pwm_frequency": ("DPWM", "PWM frequency setting", "hw"),
-        "command_direction": ("CMDDIR", "direction of rotation", "doc"),
-        "pulse_scaling": ("DMPSCL", "incoming pulse scaling", "doc"),
-        "invert_analog": ("IANI", "invert analog input", "doc"),
-        "analog_deadband": ("ANICDB", "analog input centre deadband, volts", "doc"),
-        "fault_on_disable": ("FLTDSB", "fault on drive disable", "doc"),
-        "fault_startup_voltage": ("FLTSTP", "fault on excessive startup voltage", "doc"),
-        "encoder_fault_frequency": ("ENCFLT", "max pre-quadrature encoder frequency", "doc"),
-        "encoder_offset": ("ENCOFF", "encoder offset", "doc"),
-        "encoder_polarity": ("ENCPOL", "encoder polarity", "doc"),
-        "hall_config": ("SHALL", "hall sensor configuration", "doc"),
-        "hall_only": ("OHALL", "hall-only commutation", "doc"),
-        "hall_direction": ("P163", "hall direction", "doc"),
+        "command_direction": ("CMDDIR", "direction of rotation", "hw"),
+        "pulse_scaling": ("DMPSCL", "incoming pulse scaling", "hw"),
+        "invert_analog": ("IANI", "invert analog input", "hw"),
+        "analog_deadband": ("ANICDB", "analog input centre deadband, volts", "hw"),
+        "fault_on_disable": ("FLTDSB", "fault on drive disable", "hw"),
+        "fault_startup_voltage": ("FLTSTP", "fault on excessive startup voltage", "hw"),
+        "encoder_fault_frequency": ("ENCFLT", "max pre-quadrature encoder frequency", "hw"),
+        "encoder_offset": ("ENCOFF", "encoder offset", "hw"),
+        "encoder_polarity": ("ENCPOL", "encoder polarity", "hw"),
+        "hall_config": ("SHALL", "hall sensor configuration", "hw"),
+        "hall_only": ("OHALL", "hall-only commutation", "hw"),
+        "hall_direction": ("P163", "hall direction", "hw"),
     },
     "motor_config": {
         "continuous_current": ("DMTIC", "motor continuous current, A", "hw"),
         "current_limit": ("DMTLIM", "torque/force limit, A", "hw"),
-        "peak_current": ("DMTIP", "motor peak current, A", "doc"),
+        "peak_current": ("DMTIP", "motor peak current, A", "hw"),
         "rated_speed": ("DMTW", "motor rated speed", "hw"),
         "back_emf": ("DMTKE", "motor Ke", "hw"),
         "winding_resistance": ("DMTRES", "winding resistance, ohm", "hw"),
         "winding_inductance": ("DMTIND", "winding inductance, mH", "hw"),
-        "inductance_factor": ("DMTINF", "motor inductance factor", "doc"),
+        "inductance_factor": ("DMTINF", "motor inductance factor", "hw"),
         "poles": ("DPOLE", "motor pole pairs", "hw"),
         "inertia": ("DMTJ", "rotor inertia", "hw"),
         "damping": ("DMTD", "damping", "hw"),
         "encoder_pitch": ("DMEPIT", "motor electrical pitch, linear only", "hw"),
-        "torque_scaling": ("DMTSCL", "torque/force scaling", "doc"),
-        "velocity_scaling": ("DMVSCL", "velocity scaling", "doc"),
-        "velocity_limit": ("DMVLIM", "velocity limit", "doc"),
-        "ambient_temperature": ("DMTAMB", "motor ambient temperature", "doc"),
-        "max_winding_temperature": ("DMTMAX", "max motor winding temperature", "doc"),
-        "thermal_resistance": ("DMTRWC", "winding thermal resistance", "doc"),
-        "thermal_time_constant": ("DMTTCM", "motor thermal time constant", "doc"),
-        "winding_time_constant": ("DMTTCW", "motor winding time constant", "doc"),
-        "temperature_switch": ("DMTSWT", "motor temperature switch type", "doc"),
-        "current_derating": ("DMTICD", "continuous current derating", "doc"),
+        "torque_scaling": ("DMTSCL", "torque/force scaling", "hw"),
+        "velocity_scaling": ("DMVSCL", "velocity scaling", "hw"),
+        "velocity_limit": ("DMVLIM", "velocity limit", "hw"),
+        "ambient_temperature": ("DMTAMB", "motor ambient temperature", "hw"),
+        "max_winding_temperature": ("DMTMAX", "max motor winding temperature", "hw"),
+        "thermal_resistance": ("DMTRWC", "winding thermal resistance", "hw"),
+        "thermal_time_constant": ("DMTTCM", "motor thermal time constant", "hw"),
+        "winding_time_constant": ("DMTTCW", "motor winding time constant", "hw"),
+        "temperature_switch": ("DMTSWT", "motor temperature switch type", "hw"),
+        "current_derating": ("DMTICD", "continuous current derating", "hw"),
     },
     "servo_gains": {
         "gain_p": ("SGP", "servo proportional gain", "hw"),
@@ -158,15 +160,15 @@ PARAMETERS: dict[str, dict[str, tuple[str, str, str]]] = {
         "gain_v": ("SGV", "servo velocity gain", "hw"),
         "gain_vf": ("SGVF", "velocity feedforward (undocumented)", "hw"),
         "gain_af": ("SGAF", "acceleration feedforward (undocumented)", "hw"),
-        "integral_windup_limit": ("SGILIM", "integral windup limit", "doc"),
+        "integral_windup_limit": ("SGILIM", "integral windup limit", "hw"),
         "max_position_error": ("SMPER", "maximum allowable position error", "hw"),
-        "max_velocity_error": ("SMVER", "maximum allowable velocity error", "doc"),
-        "max_acceleration": ("SMAV", "max acceleration in velocity mode", "doc"),
-        "proportional_gain": ("PGAIN", "current loop proportional gain", "doc"),
-        "integral_gain": ("IGAIN", "current loop integral gain", "doc"),
-        "current_loop_bandwidth": ("DIBW", "current loop bandwidth", "doc"),
-        "auto_current_gains": ("IAUTO", "auto-determine current loop gains", "doc"),
-        "load_inertia_ratio": ("LJRAT", "load-to-rotor inertia ratio", "doc"),
+        "max_velocity_error": ("SMVER", "maximum allowable velocity error", "hw"),
+        "max_acceleration": ("SMAV", "max acceleration in velocity mode", "hw"),
+        "proportional_gain": ("PGAIN", "current loop proportional gain", "hw"),
+        "integral_gain": ("IGAIN", "current loop integral gain", "hw"),
+        "current_loop_bandwidth": ("DIBW", "current loop bandwidth", "hw"),
+        "auto_current_gains": ("IAUTO", "auto-determine current loop gains", "hw"),
+        "load_inertia_ratio": ("LJRAT", "load-to-rotor inertia ratio", "hw"),
     },
 }
 
@@ -301,7 +303,9 @@ class AriesDrive:
     # -- generic parameter access -----------------------------------------
     def get(self, name: str, **kw) -> Response:
         """Read a parameter by its friendly name from :data:`PARAMETERS`."""
-        return self.query(self._command_for(name), **kw)
+        command = self._command_for(name)
+        self._guard_action(command)
+        return self.query(command, **kw)
 
     def set(self, name: str, value: object, verify: bool = True, **kw) -> Response:
         """Write a parameter by its friendly name, then read it back.
@@ -340,6 +344,15 @@ class AriesDrive:
             return str(wanted).strip().upper() == actual.strip().upper()
 
     @staticmethod
+    def _guard_action(command: str) -> None:
+        """Refuse to read a command that would act instead of reporting."""
+        if command.upper() in ACTION_COMMANDS:
+            raise ValueError(
+                f"{command} performs an action when sent bare and has no "
+                f"read-back form; reading it would change the drive's state"
+            )
+
+    @staticmethod
     def _command_for(name: str) -> str:
         try:
             return PARAMETER_COMMANDS[name]
@@ -361,6 +374,8 @@ class AriesDrive:
             out[group] = {}
             for name, entry in entries.items():
                 cmd = entry[0]
+                if cmd.upper() in ACTION_COMMANDS:
+                    continue  # reading it would trigger it
                 resp = self.raw(cmd, strict=False)
                 out[group][name] = None if resp.empty or resp.is_error else resp.value
         return out
@@ -583,7 +598,14 @@ class AriesDrive:
         explicit zero point instead.
 
         Unlike every other command here, ``DCMDZ`` uses an ``=`` in its syntax
-        (``DCMDZ=0.5``), which is why it is not a plain :meth:`set`.
+        (``DCMDZ=0.5``), which is why it is not a plain :meth:`set`. It also has
+        no read-back form - the manual gives its Response as ``N/A`` - so the
+        only way to see the effect is that :meth:`analog_input` reports the
+        voltage *after* the zero point is applied.
+
+        Calling this bare therefore changes drive state, and there is no way to
+        recover the previous zero point from the drive afterwards. Note the
+        present ``TANI`` reading first if you may need to put it back.
         """
         if volts is None:
             return self.raw("DCMDZ", expect_reply=False)
@@ -606,20 +628,32 @@ class AriesDrive:
             name = DRIVE_MODES.get(mode, ("unknown mode",))[0]
             return False, f"DMODE{mode} ({name}) does not follow the analog input"
 
+        # TANI reports the voltage *after* the DCMDZ zero point is applied, so
+        # the effective command is TANI itself. DCMDZ is deliberately not read:
+        # sending it bare re-zeros the input (see ACTION_COMMANDS).
         volts = self.analog_input()
-        zero = self._optional_float("DCMDZ", 0.0)
         deadband = self._optional_float("ANICDB", 0.04)
-        offset = abs(volts - zero)
         name = DRIVE_MODES[mode][0]
-        if offset > deadband:
-            return True, (
-                f"DMODE{mode} ({name}): input is {volts:.3f} V, {offset:.3f} V "
-                f"from the {zero:.3f} V zero point and outside the "
-                f"{deadband:.3f} V deadband - the motor will move on enable"
+
+        if abs(volts) <= deadband:
+            return False, (
+                f"DMODE{mode} ({name}): command input is {volts:+.3f} V, inside "
+                f"the {deadband:.3f} V deadband"
             )
-        return False, (
-            f"DMODE{mode} ({name}): input is {volts:.3f} V, within the "
-            f"{deadband:.3f} V deadband around {zero:.3f} V"
+
+        scale_cmd = "DMVSCL" if mode == 4 else "DMTSCL"
+        scale = self._optional_float(scale_cmd, 0.0)
+        # Rev G, ANICDB: command = (Vin - DCMDZ -/+ ANICDB) * scale / 10
+        magnitude = (abs(volts) - deadband) * scale / 10.0
+        units = "rev/s" if mode == 4 else "A"
+        estimate = (
+            f", which {scale_cmd}{scale:g} scales to about "
+            f"{magnitude * (1 if volts > 0 else -1):+.3f} {units}"
+            if scale else ""
+        )
+        return True, (
+            f"DMODE{mode} ({name}): command input is {volts:+.3f} V, outside the "
+            f"{deadband:.3f} V deadband{estimate} - the motor will move on enable"
         )
 
     def _optional_float(self, command: str, fallback: float) -> float:

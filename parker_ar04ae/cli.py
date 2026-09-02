@@ -189,8 +189,9 @@ def cmd_check(args) -> int:
         if not mode.empty:
             m = mode.as_int()
             print(f"  mode          DMODE{m} ({DRIVE_MODES.get(m, ('unknown',))[0]})")
-        for label, cmd in [("analog input", "TANI"), ("zero point", "DCMDZ"),
-                           ("deadband", "ANICDB"), ("enabled", "DRIVE"),
+        # DCMDZ is deliberately absent: sending it bare re-zeros the input.
+        for label, cmd in [("analog input", "TANI"), ("deadband", "ANICDB"),
+                           ("velocity scale", "DMVSCL"), ("enabled", "DRIVE"),
                            ("bus voltage", "TVBUS")]:
             r = d.raw(cmd, strict=False)
             print(f"  {label:<13} {r.value if not r.empty else '(not supported)'}")

@@ -60,3 +60,17 @@ def test_feedback_types_include_smart_encoder():
 
 def test_command_length_limit():
     assert MAX_COMMAND_LENGTH == 32
+
+
+def test_dcmdz_is_an_action_not_a_query():
+    from parker_ar04ae.reference import ACTION_COMMANDS
+
+    # Sending DCMDZ bare re-zeros the analog input; it has no read-back form.
+    assert "DCMDZ" in ACTION_COMMANDS
+    assert {"RESET", "RFS", "ESTORE", "ALIGN", "CERRLG"} <= ACTION_COMMANDS
+
+
+def test_ordinary_parameters_are_not_actions():
+    from parker_ar04ae.reference import ACTION_COMMANDS
+
+    assert not {"SGP", "TANI", "DMODE", "ERES"} & ACTION_COMMANDS

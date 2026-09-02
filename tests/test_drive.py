@@ -356,10 +356,41 @@ def test_will_move_on_enable_is_false_inside_the_deadband(port):
     assert "deadband" in why
 
 
-def test_will_move_on_enable_accounts_for_the_zero_point(port):
-    port.replies["DCMDZ"] = "0.930"  # zeroed against the standing command
+def test_tani_is_already_zero_point_adjusted(port):
+    # TANI reports the voltage after DCMDZ is applied, so once the input has
+    # been zeroed the reading itself falls inside the deadband.
+    port.replies["TANI"] = "0.001"
     d = AriesDrive(byte_port=port, timeout=0.3).connect()
     assert d.will_move_on_enable()[0] is False
+
+
+def test_will_move_on_enable_never_sends_dcmdz(drive, port):
+    # Sending DCMDZ bare would re-zero the input - it must not be read.
+    drive.will_move_on_enable()
+    assert "DCMDZ" not in port.written
+
+
+def test_will_move_on_enable_estimates_the_commanded_velocity(drive):
+    # DMODE4, TANI 0.940 V, deadband 0.040 V, DMVSCL 100.0
+    _, why = drive.will_move_on_enable()
+    assert "rev/s" in why and "DMVSCL" in why
+
+
+# -- action commands must not be read --------------------------------------
+def test_guard_refuses_an_action_command(drive):
+    with pytest.raises(ValueError) as exc:
+        drive._guard_action("DCMDZ")
+    assert "read-back" in str(exc.value)
+
+
+def test_guard_allows_ordinary_parameters(drive):
+    drive._guard_action("SGP")  # no raise
+
+
+def test_snapshot_skips_action_commands(drive, port):
+    drive.snapshot()
+    for cmd in ("DCMDZ", "RESET", "RFS", "ESTORE", "ALIGN", "CERRLG"):
+        assert cmd not in port.written
 
 
 def test_will_move_on_enable_is_false_in_step_and_direction_mode(port):

@@ -116,6 +116,22 @@ def describe_drive_mode(mode: int) -> str:
     return entry[0] if entry else "unknown mode"
 
 
+#: Commands that *do something* when sent bare, rather than reporting a value.
+#: Sending one as if it were a query changes the drive's state - ``DCMDZ`` with
+#: no argument re-zeros the analog command input against whatever voltage
+#: happens to be present, and its Response field in the manual is ``N/A``, so
+#: there is no read-back form at all. :meth:`~parker_ar04ae.drive.AriesDrive.get`
+#: and :meth:`~parker_ar04ae.drive.AriesDrive.snapshot` refuse these.
+ACTION_COMMANDS: frozenset[str] = frozenset({
+    "ALIGN",    # runs the encoder alignment procedure; turns the motor
+    "CERRLG",   # clears the error log
+    "DCMDZ",    # re-zeros the analog command input
+    "ESTORE",   # writes motor data to the smart encoder
+    "PSET",     # establishes absolute position
+    "RESET",    # reboots the drive
+    "RFS",      # returns the drive to factory settings
+})
+
 #: Modes in which the drive acts on the analog command input the moment it is
 #: energised. In these, a non-zero reading on TANI means the motor will move on
 #: enable, with no further command needed.
