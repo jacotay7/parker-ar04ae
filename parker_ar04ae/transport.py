@@ -277,7 +277,7 @@ class SerialTransport:
 
     @staticmethod
     def looks_like_echo(command: str, line: str) -> bool:
-        """True if ``line`` is the drive echoing ``command`` back.
+        r"""True if ``line`` is the drive echoing ``command`` back.
 
         Tolerates a single mangled character. Motor PWM noise flips bits on the
         echo as readily as on the reply - ``TANI`` has come back as ``TQNI`` and

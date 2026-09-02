@@ -232,3 +232,25 @@ THERMAL_INPUT_SPEC: dict[str, str] = {
     "max_supplied_voltage": "15 V",
     "pins": "MOTOR FEEDBACK 10 (Thermal+) and 15 (Thermal-), encoder version",
 }
+
+
+#: RS-232 cable, drive DRIVE I/O to a 9-pin PC/adapter port (Rev G, Table 36).
+#: ``{drive pin: (DB9 pin, signal)}``. The drive's labels are from its own point
+#: of view, so its Rx takes the PC's Tx.
+RS232_CABLE: dict[int, tuple[int, str]] = {
+    25: (3, "drive Rx  <- PC Tx"),
+    26: (2, "drive Tx  -> PC Rx"),
+    24: (5, "DGND      <-> PC signal ground"),
+}
+
+#: Serial line settings for RS-232 (Rev G, Table 35). Full duplex, and no
+#: hardware or software handshaking - the drive uses DC1 and ENQ as protocol
+#: markers, so XON/XOFF must stay off or they would be consumed.
+RS232_SETTINGS: dict[str, str] = {
+    "baud": "9600",
+    "data bits": "8",
+    "stop bits": "1",
+    "parity": "none",
+    "duplex": "full",
+    "max cable length": "50 ft (15.25 m)",
+}

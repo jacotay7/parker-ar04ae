@@ -506,6 +506,34 @@ before anything could intervene.
 Per the manual, if the enable input is closed at power-up the drive enables itself
 (`DRIVE1`) without a serial command.
 
+### RS-232 cable — DRIVE I/O to a 9-pin port
+
+Three wires. The drive's labels are from *its* point of view, so its Rx takes the PC's
+Tx (Rev G, Table 36):
+
+| DB9 (PC / USB adapter) | Drive DRIVE I/O | |
+| --- | --- | --- |
+| **3** TXD | **25** | PC transmit → drive Rx |
+| **2** RXD | **26** | drive Tx → PC receive |
+| **5** GND | **24** | signal ground |
+
+DB9 pin 5 is signal ground, so that identification is right. The manual names pin 24
+specifically for ground, though any `DGND` pin works electrically.
+
+9600 8N1, no parity, full duplex, no handshaking. Nothing is needed on RTS/CTS/DTR/DSR
+— the drive has no handshake lines. Max cable length 50 ft.
+
+**Connect the serial cable before powering the drive.** The manual warns that
+reconnecting with power applied can have the drive interpret intermittent contacts as
+hardware handshake signals.
+
+Given the corruption measured on this setup, build the cable to help rather than hurt:
+use **shielded** cable with the shield landed on the connector shell at the **PC end
+only** (grounding both ends invites a loop), twist each signal with a ground return,
+keep it short, and route it away from the motor leads — crossing at right angles rather
+than running alongside. Note the drive's `DGND` is shared with the enable and reset
+returns, so that ground is already carrying switching currents.
+
 ### Fault output — DRIVE I/O pins 9 and 16
 
 `FAULT+` is pin **9** (collector), `FAULT−` is pin **16** (emitter). An opto-isolated
