@@ -875,6 +875,41 @@ Setting `DMVSCL` to 0 makes the command scale to zero, so the drive still auto-e
 but holds still — which is how the reset above was performed safely. Restore the
 previous value afterwards.
 
+## Front panel LEDs
+
+Two bi-colour LEDs: the **left** shows yellow or green, the **right** shows red or
+green. **Read them together** — the left one alone is ambiguous.
+
+| Left | Right | Meaning |
+| --- | --- | --- |
+| off | green | power on, **enabled** |
+| yellow | green | power on, regeneration active |
+| off | red | power on, **disabled**, no fault |
+| yellow | off | power on, boot process |
+| off | red **flashing** | **waiting for OS download** |
+| yellow **flashing** | red **flashing** | **OS download in process** |
+
+Faults blink a count on the left LED with the right held red:
+
+| Left | Meaning |
+| --- | --- |
+| yellow steady | control power mode active |
+| yellow + 1 green flash | bridge fault |
+| yellow + 2 green flashes | feedback fault |
+| yellow + 3 green flashes | thermal fault |
+| yellow + 4 green flashes | other fault |
+| yellow + 5 green flashes | encoder loss |
+
+**A flashing yellow left LED together with an unresponsive serial port points at OS
+download mode**, not a fault — faults leave the drive talking. The manual warns that
+"reconnecting the cables with power applied may cause the drive to interpret
+intermittent connections as RS-232 hardware handshake signals", so unplugging the USB
+adapter while the drive is powered can drop it into its bootloader.
+
+Recovery is a power cycle. **Open the enable interlock first**, so the drive comes back
+disabled instead of auto-enabling, and check the configuration afterwards — `DCMDZ` in
+particular, which has no read-back and would revert to 0 if settings were lost.
+
 ## Homing
 
 **The drive cannot home.** `HOM` returns `ERROR: Unknown Command`, and the words

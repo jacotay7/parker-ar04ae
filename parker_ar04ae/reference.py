@@ -254,3 +254,30 @@ RS232_SETTINGS: dict[str, str] = {
     "duplex": "full",
     "max cable length": "50 ft (15.25 m)",
 }
+
+
+# -- front panel LEDs (Rev G, Tables 22 and 23) ----------------------------
+#
+# Two bi-colour LEDs. The LEFT shows yellow or green; the RIGHT shows red or
+# green. Both must be read together - the left alone is ambiguous.
+
+#: Normal operating states: ``(left, right) -> meaning`` (Table 22).
+LED_NORMAL: dict[tuple[str, str], str] = {
+    ("off", "green"): "power on, enabled",
+    ("yellow", "green"): "power on, regeneration active",
+    ("off", "red"): "power on, disabled - no fault",
+    ("yellow", "off"): "power on, boot process",
+    ("off", "red flashing"): "waiting for OS download",
+    ("yellow flashing", "red flashing"): "OS download in process",
+}
+
+#: Fault states (Table 23). The left LED shows yellow then a number of green
+#: flashes; that count identifies the fault. The right LED is red throughout.
+LED_FAULT: dict[str, str] = {
+    "yellow steady": "control power mode active",
+    "yellow + 1 green flash": "bridge fault",
+    "yellow + 2 green flashes": "feedback fault",
+    "yellow + 3 green flashes": "thermal fault",
+    "yellow + 4 green flashes": "other fault",
+    "yellow + 5 green flashes": "encoder loss",
+}
