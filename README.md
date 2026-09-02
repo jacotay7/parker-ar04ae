@@ -672,20 +672,29 @@ detecting and configured for a standard encoder.
 Practical consequences: **position is lost on every power cycle**, there is no absolute
 reference, and `establish_position()` is the only way to set an origin.
 
-### `ERES` is worth verifying
+### `ERES` is verified
 
-`ERES` reads **944000** counts/rev. For a quadrature encoder that implies 236,000
-lines, which is implausibly high, and `DMTR` reports `OTHER=R200D` — a third-party
-motor whose parameters were configured by hand rather than read from a smart encoder.
+`ERES` reads **944000** counts/rev. That implies 236,000 quadrature lines, which looked
+implausibly high — and `DMTR` reports `OTHER=R200D`, a third-party motor configured by
+hand rather than read from a smart encoder. Every speed and distance figure here is
+scaled by `ERES`, and no serial measurement can catch an error in it, because the drive
+derives `TVELA` from `TPE` and `ERES` too, so both would move together.
 
-Every speed and distance figure in this README is scaled by `ERES`, so if it is wrong
-they are all wrong by the same factor — the 1 RPM result included. Nothing measured so
-far can catch that, because the drive derives `TVELA` from `TPE` and `ERES` too, so
-both move together.
+Settled physically. With the drive disabled and the shaft free, one revolution turned
+by hand:
 
-A physical check settles it: with the drive disabled and the shaft free, mark it, turn
-it exactly one revolution by hand, and read the change in `TPE`. That delta *is* the
-true counts per revolution.
+```
+start   127
+end     -943526
+delta   943,653 counts for one revolution      vs 944,000 configured   (0.04% error)
+```
+
+The 347-count difference is 0.13° of shaft rotation — inside the precision of turning
+to a mark by eye. **`ERES` 944000 is correct**, so the measured speeds in this README
+stand as written. That is a genuinely high-resolution encoder; unusual, but confirmed.
+
+Worth repeating this check on any drive whose motor was configured by hand, since it is
+the only way to catch a wrong `ERES`.
 
 ### Resetting safely when the interlock is closed
 
@@ -732,16 +741,14 @@ home needs a controller upstream of the drive.
 ## Remaining work
 
 1. **Zero the analog command input.** It still stands at ~0.92 V, so the motor turns
-   whenever the drive energises — and a closed enable input auto-enables at power-up.
-   Short `AIN+` (pin **14**) to `AIN-` (pin **15**), then call
-   `zero_command_offset()`. Once zeroed, speed has to come from a real command
-   voltage rather than from scaling a floating input.
-2. **Tune the velocity loop** if the shaft speed needs to match the command. `SGI` is
-   0, and the droop above follows from that.
-3. **Reduce the serial noise** — shielded cable, routed away from the motor leads.
-   The retry logic hides most of it, but not corruption that lands on a valid ASCII
-   character.
-4. Decode the `TAS` bits, which remain undocumented in Rev G.
+   whenever the drive energises — and with the interlock now closed that includes
+   every power-up. Short `AIN+` (pin **14**) to `AIN-` (pin **15**), then call
+   `zero_command_offset()`. This is the last standing hazard.
+2. **Tune the velocity loop** if commanded speed needs to match actual. `SGI` is 0, and
+   the ~32% droop follows from that.
+3. **Reduce the serial noise** — shielded cable routed away from the motor leads. The
+   retry logic hides most of it, but not corruption landing on a valid ASCII character.
+4. Decode the `TAS` bits, undocumented in Rev G.
 
 ## Still unconfirmed
 
