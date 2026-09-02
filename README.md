@@ -375,6 +375,63 @@ Two settings worth knowing:
 
 The error log holds ten power cycles and no faults.
 
+## Wiring
+
+Pin data is in [reference.py](parker_ar04ae/reference.py) as `DRIVE_IO_PINOUT`,
+`MOTOR_FEEDBACK_PINOUT`, `ENABLE_INPUT_SPEC` and `THERMAL_INPUT_SPEC`.
+
+**Pin numbers collide between the two connectors** — pin 15 is `AIN-` on DRIVE I/O
+but `Thermal-` on MOTOR FEEDBACK. Always check which connector is meant.
+
+### Enable input — DRIVE I/O pins 1 and 21
+
+| | |
+| --- | --- |
+| ENABLE+ | pin **1** (anode) |
+| ENABLE− | pin **21** (cathode) |
+
+> The drive Enable and Reset inputs are **optically isolated** inputs. Current is
+> limited internally for input voltage control of 5 to 24 volt logic. The Anode (+)
+> and Cathode (−) are on separate connector pins.
+
+This is the part that trips people up: **it is an opto-isolated LED, not a dry
+contact.** Jumpering pin 1 to pin 21 shorts the LED and does nothing. Current has to
+*flow through* it — e.g. +24 V to pin 1, pin 21 to 24 V return, with the interlock
+switch in that loop. Current is limited internally, so no external resistor is needed
+anywhere in 5–24 V.
+
+| | |
+| --- | --- |
+| Guaranteed on | ≥ 4 VDC |
+| Guaranteed off | ≤ 2 VDC |
+| Forward current | 3–12 mA |
+| Max forward / reverse | 30 V / −30 V |
+| Switching time | 1 ms on, 1 ms off |
+
+`RESET+` / `RESET−` on pins **18** and **23** work the same way.
+
+Per the manual, if the enable input is closed at power-up the drive enables itself
+(`DRIVE1`) without a serial command.
+
+### Motor thermal switch — MOTOR FEEDBACK pins 10 and 15
+
+| | |
+| --- | --- |
+| Thermal+ | pin **10** |
+| Thermal− | pin **15** *(encoder version)* |
+
+2 mA sense current, 15 V maximum supplied. This drive reports `STANDARD ENCODER`
+(`SFB 2`), so the encoder pinout applies.
+
+**On the resolver option the map differs** — `Thermal−` moves to pins **3 and 6**, and
+pin 15 becomes `Reference−`. Wiring a thermal switch to pin 15 on a resolver unit puts
+it on the resolver excitation line.
+
+### Analog command — DRIVE I/O pins 14 and 15
+
+`AIN+` is pin **14**, `AIN−` is pin **15**. To zero the command offset, short 14 to 15
+(or command 0 V), then call `zero_command_offset()`.
+
 ## Remaining work
 
 1. **Close the enable interlock across Drive I/O pins 1 and 21.** Until then `DRIVE1`

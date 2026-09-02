@@ -136,3 +136,99 @@ ACTION_COMMANDS: frozenset[str] = frozenset({
 #: energised. In these, a non-zero reading on TANI means the motor will move on
 #: enable, with no further command needed.
 ANALOG_COMMAND_MODES = (2, 4)
+
+
+# -- connector pinouts (Rev G, Chapter 3 "Electrical Installation") ---------
+#
+# Two separate connectors, and their pin numbers collide - pin 15 is AIN- on
+# the DRIVE I/O connector but Thermal- on the MOTOR FEEDBACK connector. Always
+# check which connector is meant.
+
+#: 26-pin DRIVE I/O connector (Rev G, Table 29).
+DRIVE_IO_PINOUT: dict[int, str] = {
+    1: "ENABLE+ - drive enable input anode",
+    2: "DGND - digital ground",
+    3: "ENC A+ - encoder A channel out",
+    4: "ENC A- - encoder A channel out",
+    5: "ENC B+ - encoder B channel out",
+    6: "ENC B- - encoder B channel out",
+    7: "ENC Z+ - encoder Z channel out (index +)",
+    8: "ENC Z- - encoder Z channel out (index -)",
+    9: "FAULT+ - fault output collector",
+    10: "STEP+ - 5V differential position command",
+    11: "STEP- - position command return",
+    12: "DIRECTION+ - 5V differential direction command",
+    13: "DIRECTION- - direction command return",
+    14: "AIN+ - analog +/-10V command",
+    15: "AIN- - +/-10V return",
+    16: "FAULT- - fault output emitter",
+    17: "DGND - digital ground",
+    18: "RESET+ - drive reset input anode",
+    19: "DGND - digital ground",
+    20: "DGND - digital ground",
+    21: "ENABLE- - drive enable input cathode",
+    22: "DGND - digital ground",
+    23: "RESET- - drive reset input cathode",
+    24: "DGND - digital ground",
+    25: "RS-232 Rx / RS-485+ (half duplex)",
+    26: "RS-232 Tx / RS-485- (half duplex)",
+}
+
+#: 15-pin MOTOR FEEDBACK connector, encoder version (Rev G, Table 24). The
+#: resolver option uses a different map - see :data:`MOTOR_FEEDBACK_RESOLVER`.
+MOTOR_FEEDBACK_PINOUT: dict[int, str] = {
+    1: "ENC Z+ / Data+ - encoder Z channel in",
+    2: "ENC Z- / Data- - encoder Z channel in",
+    3: "DGND - encoder power return",
+    4: "+5 VDC - encoder power",
+    5: "+5 VDC - hall power",
+    6: "DGND - hall power return",
+    7: "ENC A- / SIN- - encoder A channel in",
+    8: "ENC A+ / SIN+ - encoder A channel in",
+    9: "Hall 1 / SCLK+ - hall 1 input",
+    10: "Thermal+ - motor thermal switch/thermistor",
+    11: "ENC B- / COS- - encoder B channel in",
+    12: "ENC B+ / COS+ - encoder B channel in",
+    13: "Hall 2 / SCLK- - hall 2 input",
+    14: "Hall 3 - hall 3 input",
+    15: "Thermal- - motor thermal switch/thermistor",
+}
+
+#: 15-pin MOTOR FEEDBACK connector, resolver option (Rev G, Table 26). Note
+#: Thermal- moves to pins 3 and 6, and pin 15 becomes Reference-.
+MOTOR_FEEDBACK_RESOLVER: dict[int, str] = {
+    3: "Thermal- - motor thermal switch/thermistor",
+    4: "Reference+ - resolver excitation",
+    6: "Thermal- - motor thermal switch/thermistor",
+    7: "SIN- - resolver feedback",
+    8: "SIN+ - resolver feedback",
+    10: "Thermal+ - motor thermal switch/thermistor",
+    11: "COS- - resolver feedback",
+    12: "COS+ - resolver feedback",
+    15: "Reference- - resolver excitation",
+}
+
+#: Electrical limits for the ENABLE and RESET inputs (Rev G, Table 30).
+#:
+#: These are **opto-isolated LED inputs, not dry contacts**: the anode and
+#: cathode are on separate pins and current has to flow through them. Simply
+#: jumpering ENABLE+ to ENABLE- shorts the LED and does nothing. Current is
+#: limited internally, so 5-24 V logic can drive the pins directly with no
+#: external resistor.
+ENABLE_INPUT_SPEC: dict[str, str] = {
+    "type": "optically isolated, anode and cathode on separate pins",
+    "logic": "5 to 24 V, current limited internally",
+    "guaranteed_on": ">= 4 VDC",
+    "guaranteed_off": "<= 2 VDC",
+    "forward_current": "3 to 12 mA",
+    "max_forward_voltage": "30 VDC",
+    "max_reverse_voltage": "-30 VDC",
+    "switching_time": "1 ms on, 1 ms off",
+}
+
+#: Motor thermal switch input limits (Rev G, Table 25).
+THERMAL_INPUT_SPEC: dict[str, str] = {
+    "current": "2 mA",
+    "max_supplied_voltage": "15 V",
+    "pins": "MOTOR FEEDBACK 10 (Thermal+) and 15 (Thermal-), encoder version",
+}
