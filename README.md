@@ -527,12 +527,41 @@ specifically for ground, though any `DGND` pin works electrically.
 reconnecting with power applied can have the drive interpret intermittent contacts as
 hardware handshake signals.
 
-Given the corruption measured on this setup, build the cable to help rather than hurt:
-use **shielded** cable with the shield landed on the connector shell at the **PC end
-only** (grounding both ends invites a loop), twist each signal with a ground return,
-keep it short, and route it away from the motor leads — crossing at right angles rather
-than running alongside. Note the drive's `DGND` is shared with the enable and reset
-returns, so that ground is already carrying switching currents.
+#### Signal ground and shield are different conductors
+
+Getting these confused breaks the link, so to be explicit:
+
+```
+DB9-3 TXD  ──── conductor ──────────────────  pin 25 (Rx)
+DB9-2 RXD  ──── conductor ──────────────────  pin 26 (Tx)
+DB9-5 GND  ──── conductor ──────────────────  pin 24 (DGND)   MANDATORY - never cut
+shell      ──── shield ─────── ✗ floating ──  (nothing at the drive end)
+```
+
+**The signal ground must be connected at both ends.** RS-232 is single-ended: Tx and Rx
+are voltages measured *against* that shared reference. Cut it and the two ends float
+relative to one another, which does not reduce noise — it removes the reference the
+signals are defined by.
+
+**The shield is the foil or braid around the conductors**, and it is the one landed at
+one end only. Ground it at the PC end, leave it insulated and unconnected at the drive
+end. Grounding both ends makes it a second path between two grounds that are not at the
+same potential, so current flows along it.
+
+Twist each signal with a ground return, keep it short, and route it away from the motor
+leads — crossing at right angles rather than running alongside. Note the drive's `DGND`
+already carries the enable and reset returns, so it is not a quiet ground.
+
+#### If a ground loop is the problem
+
+The serial ground ties the drive's `DGND` to the Mac, and if the Mac is on its charger
+that reaches mains earth, which the drive is also bonded to. That is a loop, and the
+cure is isolation rather than a cut wire:
+
+- **An isolated USB-RS-232 adapter**, or an inline RS-232 isolator. This is the proper
+  fix: it breaks the loop while keeping a valid signal reference on each side.
+- **Run the Mac on battery** with the charger unplugged. Free, takes seconds, and if
+  the corruption rate improves it confirms the loop before you buy anything.
 
 ### Fault output — DRIVE I/O pins 9 and 16
 
