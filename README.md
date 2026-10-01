@@ -1008,3 +1008,7 @@ stable and fault-free as it stands.
   effect.
 - **`TAS` bit meanings.** The axis status word reads back but is undocumented in
   Rev G, so individual bits are not decoded.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
